@@ -523,7 +523,7 @@ async def cancel_task(
     return {
         "ok": True,
         "returned": returned,
-        "message": f"{t.ref} отменена, {returned} сообщений вернулись в разбор",
+        "message": f"{t.ref} отменена. Сообщения из её нити вернулись в разбор ({returned}).",
     }
 
 
@@ -642,8 +642,14 @@ async def resolve_ticket(
     t = (await session.execute(select(Ticket).where(Ticket.ref == ref))).scalar_one_or_none()
     if t is None:
         raise HTTPException(404, "Заявка не найдена")
+    rule = (
+        await session.execute(select(Rule).where(Rule.code == "close_without_reply"))
+    ).scalar_one_or_none()
+    # Правила нет в базе (seed не запускали) — проверяем. Безопасное умолчание
+    # лучше тихо выключенной защиты.
+    enforce = rule.enabled if rule is not None else True
     try:
-        service.close_ticket(t, now())
+        service.close_ticket(t, now(), enforce_reply=enforce)
     except service.RuleViolation as exc:
         raise _guard(exc) from None
     await session.commit()
@@ -702,7 +708,7 @@ async def list_hotels(
 
 @router.get("/digest")
 async def digest(
-    staff: Staff = Depends(current_staff),
+    staff: Staff = Depends(current_manager),
     session: AsyncSession = Depends(get_session),
 ):
     ts = now()
@@ -745,6 +751,183 @@ async def report_modules(
         if t.status == TaskStatus.done:
             a["done"] += 1
     return sorted(agg.values(), key=lambda x: -x["all"])
+
+
+# --------------------------------------------------------------------------
+# Сотрудники, применение предложений, удержание
+# --------------------------------------------------------------------------
+
+
+@router.get("/staff")
+async def list_staff(
+    staff: Staff = Depends(current_staff),
+    session: AsyncSession = Depends(get_session),
+):
+    rows = (
+        await session.execute(
+            select(Staff).where(Staff.active.is_(True)).order_by(Staff.name)
+        )
+    ).scalars().all()
+    return [{"id": s.id, "name": s.name, "is_manager": s.is_manager} for s in rows]
+
+
+_THREAD_TAG = {
+    ProposalKind.progress: "resolution",
+    ProposalKind.deadline: "postpone",
+    ProposalKind.scope: "clarification",
+    ProposalKind.duplicate: "complaint",
+    ProposalKind.question: "question",
+}
+
+
+@router.post("/proposals/{proposal_id}/apply")
+async def apply_proposal(
+    proposal_id: int,
+    staff: Staff = Depends(current_staff),
+    session: AsyncSession = Depends(get_session),
+):
+    """Применяет продолжение из чата к задаче.
+
+    Новый запрос сюда не приходит: он оформляется формой (POST /tasks), потому
+    что у задачи обязаны появиться ответственный, срок и критерий готовности —
+    угадывать их молча модель не должна.
+
+    Если задачи уже нет или она закрыта, ответ честно говорит об этом, а
+    сообщение возвращается в разбор. Рапорт об успехе там, где ничего не
+    произошло, — худший вид ошибки для системы, которая держится на доверии.
+    """
+    p = await session.get(Proposal, proposal_id, options=[selectinload(Proposal.message)])
+    if p is None:
+        raise HTTPException(404, "Предложение не найдено")
+    if p.state != ProposalState.pending:
+        raise HTTPException(409, "Это предложение уже обработано")
+    if p.kind == ProposalKind.new_task:
+        raise HTTPException(
+            409, "Новый запрос оформляется формой: нужны ответственный, срок и критерий готовности."
+        )
+
+    ts = now()
+    p.decided_at = ts
+    p.decided_by = staff.name
+    task = None
+    if p.task_id:
+        task = (
+            await session.execute(_task_query().where(Task.id == p.task_id))
+        ).scalar_one_or_none()
+
+    if task is None or not task.is_open:
+        p.state = ProposalState.orphaned
+        if p.message is not None:
+            p.message.analyzed_at = None
+        await session.commit()
+        why = (
+            "Задачи больше нет"
+            if task is None
+            else f"Задача {task.ref} уже закрыта ({service.STATUS_TITLE[task.status]})"
+        )
+        return {
+            "ok": False,
+            "orphan": True,
+            "message": f"{why} — применять не к чему. Сообщение вернулось в разбор новым запросом.",
+        }
+
+    draft = p.draft or {}
+    if p.kind == ProposalKind.progress:
+        try:
+            service.change_status(task, TaskStatus.review, staff, ts)
+        except service.RuleViolation as exc:
+            raise _guard(exc) from None
+        what = "сдана на проверку"
+    elif p.kind == ProposalKind.deadline:
+        raw = draft.get("due_at")
+        if not raw:
+            raise HTTPException(409, "Модель не назвала новый срок — поправьте задачу вручную.")
+        due = datetime.fromisoformat(str(raw))
+        task.due_at = (
+            due.astimezone(timezone.utc).replace(tzinfo=None) if due.tzinfo else due
+        )
+        service.add_event(
+            task, f"Срок перенесён на {task.due_at:%d.%m} — по сообщению в чате", staff.name
+        )
+        what = "срок перенесён"
+    elif p.kind == ProposalKind.scope:
+        add = str(draft.get("dod_add") or "").strip()
+        if not add:
+            raise HTTPException(409, "Модель не сформулировала, что добавить, — поправьте вручную.")
+        task.definition_of_done = f"{task.definition_of_done.rstrip()} {add}"
+        service.add_event(task, "Критерий готовности дополнен из чата", staff.name)
+        what = "критерий готовности дополнен"
+    elif p.kind == ProposalKind.duplicate:
+        service.add_event(task, "Прикреплено ещё одно сообщение о той же проблеме", staff.name)
+        what = "сообщение прикреплено, дубль не создан"
+    else:
+        service.add_event(task, "Вопрос по задаче добавлен в нить", staff.name)
+        what = "вопрос добавлен в нить"
+
+    task.last_moved_at = ts
+    already = (
+        await session.execute(
+            select(ThreadLink).where(
+                ThreadLink.task_id == task.id, ThreadLink.message_id == p.message_id
+            )
+        )
+    ).scalar_one_or_none()
+    if already is None:
+        session.add(
+            ThreadLink(task_id=task.id, message_id=p.message_id, tag=_THREAD_TAG.get(p.kind, "request"))
+        )
+    p.state = ProposalState.applied
+    await session.commit()
+    return {
+        "ok": True,
+        "orphan": False,
+        "message": f"{task.ref}: {what}. Сообщение осталось в нити задачи.",
+    }
+
+
+@router.post("/hotels/{hotel_id}/offers/{idx}/task", status_code=201)
+async def offer_to_task(
+    hotel_id: int,
+    idx: int,
+    staff: Staff = Depends(current_staff),
+    session: AsyncSession = Depends(get_session),
+):
+    """Предложение по удержанию превращается в задачу.
+
+    Ответственный — тот, кто нажал: решение удерживать клиента принимает
+    конкретный человек, и он же отвечает за звонок. Срок — завтра: риск
+    оттока не ждёт планёрки.
+    """
+    h = await session.get(Hotel, hotel_id)
+    if h is None:
+        raise HTTPException(404, "Клиент не найден")
+    offers = h.offers or []
+    if not 0 <= idx < len(offers):
+        raise HTTPException(404, "Предложение не найдено")
+    offer = offers[idx]
+    title = str(offer.get("h", "")).strip() or "Действие по удержанию клиента"
+
+    ts = now()
+    task = Task(
+        ref=await _next_ref(session, "SB", Task),
+        title=title[:300],
+        definition_of_done=f"{title} — сделано, реакция {h.name} записана заметкой в задачу.",
+        type=TaskType.request,
+        module=Module.unknown,
+        priority=3,
+        assignee_id=staff.id,
+        author_id=staff.id,
+        hotel_id=h.id,
+        due_at=ts + timedelta(days=1),
+        last_moved_at=ts,
+    )
+    task.events = []
+    session.add(task)
+    await session.flush()
+    service.add_event(task, f"Создана из предложения по удержанию {h.name}", staff.name)
+    service.add_event(task, "Ждёт начала работы", pending=True)
+    await session.commit()
+    return {"ref": task.ref, "message": f"{task.ref} создана и привязана к {h.name}"}
 
 
 # --------------------------------------------------------------------------

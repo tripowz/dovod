@@ -166,6 +166,8 @@ e = service.hotel_economics(h)
 check("обслуживание считается по ставке часа", e.cost == 31 * 60000, f"{e.cost}")
 check("убыточный клиент виден по знаку маржи", e.margin < 0, f"{e.margin}")
 check("вывод не советует удерживать любой ценой", "починить причину" in e.verdict)
+check("в выводе сохранена пунктуация", "в том, чтобы" in e.verdict, e.verdict[-60:])
+check("сумма разделена пробелами", "60 000" in e.verdict, e.verdict[:60])
 
 h2 = Hotel(id=2, name="Ichan Qala", mrr=1_250_000, service_hours=9, risk=RiskLevel.medium)
 check("прибыльный клиент даёт другой вывод", service.hotel_economics(h2).margin > 0)

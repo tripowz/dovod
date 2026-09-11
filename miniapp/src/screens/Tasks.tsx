@@ -12,6 +12,16 @@ import {
   plural,
 } from "../components/ui";
 
+/** Чем сообщение в нити является для задачи. Хранится кодом, показывается словом. */
+const THREAD_TAG: Record<string, string> = {
+  request: "запрос",
+  clarification: "уточнение",
+  question: "вопрос",
+  resolution: "решение",
+  postpone: "перенос",
+  complaint: "жалоба клиента",
+};
+
 const SCOPES = [
   ["all", "Все"],
   ["mine", "Мои"],
@@ -217,7 +227,9 @@ function Detail({
               <div key={i} className="text-[12.5px]">
                 <div className="mb-0.5 flex items-center gap-2">
                   <b className="text-[12px] font-semibold">{m.author ?? "—"}</b>
-                  <span className="rounded bg-surface px-1.5 text-[10px] text-muted">{m.tag}</span>
+                  <span className="rounded bg-surface px-1.5 text-[10px] text-muted">
+                    {THREAD_TAG[m.tag] ?? m.tag}
+                  </span>
                   <time className="ml-auto font-mono text-[10px] text-muted">
                     {new Date(m.sent_at).toLocaleDateString("ru-RU")}
                   </time>

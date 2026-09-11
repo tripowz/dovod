@@ -25,6 +25,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Enum as SAEnum,
@@ -162,7 +163,7 @@ class Chat(Base):
     __tablename__ = "chats"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    tg_chat_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    tg_chat_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     title: Mapped[str] = mapped_column(String(255))
     kind: Mapped[ChatKind] = mapped_column(_enum(ChatKind), default=ChatKind.other)
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
@@ -185,7 +186,7 @@ class Message(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     chat_id: Mapped[int] = mapped_column(ForeignKey("chats.id"), index=True)
     tg_msg_id: Mapped[int] = mapped_column(Integer)
-    tg_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    tg_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     author_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     text: Mapped[str] = mapped_column(Text)
     # Реплай — самый надёжный признак продолжения: он не требует догадок.
@@ -250,7 +251,7 @@ class HotelContact(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     hotel_id: Mapped[int] = mapped_column(ForeignKey("hotels.id"), index=True)
-    tg_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    tg_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(80), default="")
     phone: Mapped[str] = mapped_column(String(40), default="")
@@ -267,7 +268,7 @@ class Staff(Base):
     __tablename__ = "staff"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    tg_user_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    tg_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     name: Mapped[str] = mapped_column(String(160))
     is_manager: Mapped[bool] = mapped_column(Boolean, default=False)
     # Потолок одновременных задач. Не запрет, а порог для сводки: выше него
@@ -632,7 +633,7 @@ class Escalation(Base):
     rule_code: Mapped[str] = mapped_column(String(48), index=True)
     subject_kind: Mapped[str] = mapped_column(String(16))  # task | ticket | hotel
     subject_id: Mapped[int] = mapped_column(Integer)
-    notified_tg_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    notified_tg_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     text: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 

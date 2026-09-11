@@ -126,7 +126,10 @@ export default function Clients({
                       onClick={() =>
                         void guard(async () => {
                           haptic("medium");
-                          return "Задача из предложения создаётся на следующем шаге";
+                          const r = await api.post<{ message: string }>(
+                            `/hotels/${open.id}/offers/${i}/task`,
+                          );
+                          return r.message;
                         })
                       }
                     >

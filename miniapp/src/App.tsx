@@ -14,7 +14,7 @@ const TABS: { key: Tab; label: string; managerOnly?: boolean }[] = [
   { key: "tasks", label: "Задачи" },
   { key: "tickets", label: "Заявки" },
   { key: "clients", label: "Клиенты" },
-  { key: "report", label: "Отчёт" },
+  { key: "report", label: "Отчёт", managerOnly: true },
 ];
 
 const TITLES: Record<Tab, [string, string]> = {
@@ -118,7 +118,9 @@ export default function App() {
         </div>
       )}
 
-      <nav className="grid shrink-0 grid-cols-5 border-t border-black/6 bg-bg px-1 pb-[env(safe-area-inset-bottom)] pt-1.5">
+      <nav
+        style={{ gridTemplateColumns: `repeat(${visible.length}, minmax(0, 1fr))` }}
+        className="grid shrink-0 border-t border-black/6 bg-bg px-1 pb-[env(safe-area-inset-bottom)] pt-1.5">
         {visible.map((t) => (
           <button
             key={t.key}

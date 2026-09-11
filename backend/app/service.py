@@ -153,14 +153,15 @@ def mark_replied(ticket: Ticket, staff: Staff, now: datetime) -> None:
         ticket.status = TicketStatus.working
 
 
-def close_ticket(ticket: Ticket, now: datetime) -> None:
-    """Закрывает заявку. Без ответа клиенту закрыть нельзя.
+def close_ticket(ticket: Ticket, now: datetime, enforce_reply: bool = True) -> None:
+    """Закрывает заявку. Пока правило включено, без ответа клиенту закрыть нельзя.
 
     Это то самое «закрыто без ответа»: задача сделана, отель об этом не узнал,
-    и для него проблема продолжается. Правило включается на второй неделе
-    пилота — оно самое полезное и самое раздражающее.
+    и для него проблема продолжается. Проверкой управляет правило
+    `close_without_reply`: оно самое полезное и самое раздражающее, поэтому
+    на первой неделе пилота выключено и включается на второй.
     """
-    if awaiting_client_reply(ticket):
+    if enforce_reply and awaiting_client_reply(ticket):
         raise RuleViolation(
             "Клиенту ещё не ответили. Закрыть заявку, о решении которой отель "
             "не знает, значит закрыть её только для себя."
@@ -182,16 +183,18 @@ class HotelEconomics:
 
     @property
     def verdict(self) -> str:
+        # Пробел как разделитель тысяч ставится только в числе. Раньше замена
+        # запятых шла по всей строке и съедала пунктуацию в самом выводе.
         if self.margin > 0:
-            return (
-                f"Остаётся {self.margin:,} сум в месяц. "
-                "Вложиться в удержание есть из чего.".replace(",", " ")
-            )
+            return f"Остаётся {_sum(self.margin)} сум в месяц. Вложиться в удержание есть из чего."
         return (
-            f"Обслуживание съедает тариф и ещё {-self.margin:,} сум сверху. "
-            "Дело не в том, чтобы удержать любой ценой, а в том, чтобы "
-            "починить причину.".replace(",", " ")
+            f"Обслуживание съедает тариф и ещё {_sum(-self.margin)} сум сверху. "
+            "Дело не в том, чтобы удержать любой ценой, а в том, чтобы починить причину."
         )
+
+
+def _sum(n: int) -> str:
+    return f"{n:,}".replace(",", " ")
 
 
 def hotel_economics(hotel: Hotel) -> HotelEconomics:
