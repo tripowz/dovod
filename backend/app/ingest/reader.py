@@ -21,7 +21,7 @@ from telethon import TelegramClient
 from telethon.tl.types import Channel, User
 
 from ..config import settings
-from ..models import FROM_NOW, Chat, ChatKind, Message
+from ..models import FROM_NOW, TELEGRAM_SERVICE_ID, Chat, ChatKind, Message
 
 log = logging.getLogger("dovod.reader")
 
@@ -70,8 +70,8 @@ def classify(dialog) -> ChatKind | None:
     «Источниках»; важно лишь не пропустить личные переписки и каналы."""
     e = dialog.entity
     if isinstance(e, User):
-        if e.bot or e.is_self:
-            return None
+        if e.bot or e.is_self or e.id == TELEGRAM_SERVICE_ID:
+            return None  # боты, «Избранное» и служебный чат с кодами входа
         return ChatKind.private
     if isinstance(e, Channel) and e.broadcast:
         return None  # каналы — объявления, а не переписка
@@ -145,6 +145,8 @@ async def fetch_new(
     stored = 0
     tops = tops or {}
     for chat in chats:
+        if chat.tg_chat_id == TELEGRAM_SERVICE_ID:
+            continue  # коды входа: не читаем, даже если чат включён вручную
         top_now = tops.get(chat.tg_chat_id)
         if chat.last_seen_msg_id == FROM_NOW:
             if top_now is None:

@@ -26,7 +26,7 @@ from sqlalchemy import select  # noqa: E402
 from app import chats  # noqa: E402
 from app.db import SessionLocal, init_db  # noqa: E402
 from app.ingest.reader import fetch_new  # noqa: E402
-from app.models import FROM_NOW, Chat, ChatKind, Message  # noqa: E402
+from app.models import FROM_NOW, TELEGRAM_SERVICE_ID, Chat, ChatKind, Message  # noqa: E402
 
 passed = failed = 0
 
@@ -74,6 +74,7 @@ async def main() -> None:
             Chat(id=2, tg_chat_id=-102, title="Команда", kind=ChatKind.team),
             Chat(id=3, tg_chat_id=-103, title="Тихий чат", kind=ChatKind.team),
             Chat(id=4, tg_chat_id=201, title="Азиза", kind=ChatKind.private),
+            Chat(id=6, tg_chat_id=TELEGRAM_SERVICE_ID, title="Telegram", kind=ChatKind.private),
         ])
         await s.commit()
 
@@ -127,6 +128,26 @@ async def main() -> None:
         c1 = await s.get(Chat, 1)
     check("с --history история берётся", c5.enabled and c5.last_seen_msg_id == 0)
     check("повторное включение продолжает с места", c1.last_seen_msg_id == 4, f"{c1.last_seen_msg_id}")
+
+    print()
+    print("=" * 62)
+    print("ЛИЧНЫЕ ПЕРЕПИСКИ")
+    print("=" * 62)
+    code = await chats.main(["on", "all", "--private"])
+    async with SessionLocal() as s:
+        c4 = await s.get(Chat, 4)
+    check("без согласия личные не включаются", code == 1 and not c4.enabled)
+    code = await chats.main(["on", "all", "--private", "--consent", "служебный", "аккаунт"])
+    async with SessionLocal() as s:
+        c4 = await s.get(Chat, 4)
+        c6 = await s.get(Chat, 6)
+    check("с согласием личные включены", code == 0 and c4.enabled)
+    check("согласие записано в чат", c4.consent_note == "служебный аккаунт", c4.consent_note)
+    check("чат с кодами входа не включён массово", not c6.enabled)
+    code = await chats.main(["on", "6", "--consent", "x"])
+    async with SessionLocal() as s:
+        c6 = await s.get(Chat, 6)
+    check("и по одному тоже не включается", code == 1 and not c6.enabled)
 
     print()
     print("=" * 62)

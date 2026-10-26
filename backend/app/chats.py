@@ -6,12 +6,15 @@
     python -m app.chats off 12                           — выключить
     python -m app.chats on all                           — включить все групповые
     python -m app.chats on all --history                 — то же, с историей
+    python -m app.chats on all --private --consent "служебный аккаунт, рабочая переписка"
+                                                         — включить и личные
     python -m app.chats off all                          — выключить все
 
 Массовое включение по умолчанию читает чаты с текущего момента: история
 сотен чатов разом встала бы в очередь разбора перед свежими обращениями
-клиентов. Личные переписки массово не включаются — только по одной и с
-записью о согласии.
+клиентов. Личные переписки массово включаются только с `--private` и
+записью о согласии — она сохраняется в каждом чате. Служебный чат Telegram
+с кодами входа не включается никогда.
 
 Экрана «Источники» в мини-аппе пока нет — это временная замена ему. Правило
 то же, что в API: личную переписку без записи о согласии не включить.
@@ -27,7 +30,7 @@ from sqlalchemy import select
 
 from .config import settings
 from .db import SessionLocal, init_db
-from .models import FROM_NOW, Chat, ChatKind
+from .models import FROM_NOW, TELEGRAM_SERVICE_ID, Chat, ChatKind
 
 KIND = {
     ChatKind.support: "поддержка",
@@ -66,7 +69,12 @@ async def main(argv: list[str]) -> int:
             print(__doc__)
             return 2
         if argv[1] == "all":
-            return await bulk(s, argv[0] == "on", "--history" in argv)
+            consent = ""
+            if "--consent" in argv:
+                consent = " ".join(argv[argv.index("--consent") + 1 :]).strip()
+            return await bulk(
+                s, argv[0] == "on", "--history" in argv, "--private" in argv, consent
+            )
         try:
             chat_id = int(argv[1])
         except ValueError:
@@ -76,6 +84,10 @@ async def main(argv: list[str]) -> int:
         chat = await s.get(Chat, chat_id)
         if chat is None:
             print(f"Чата №{chat_id} нет. Список: python -m app.chats")
+            return 1
+
+        if argv[0] == "on" and chat.tg_chat_id == TELEGRAM_SERVICE_ID:
+            print("Это служебный чат Telegram с кодами входа. Его читать нельзя.")
             return 1
 
         if argv[0] == "off":
@@ -107,7 +119,15 @@ async def main(argv: list[str]) -> int:
         return 0
 
 
-async def bulk(s, on: bool, history: bool) -> int:
+async def bulk(s, on: bool, history: bool, private: bool = False, consent: str = "") -> int:
+    if on and private and not consent:
+        print(
+            "Личные переписки включаются только с записью о согласии. Укажите, чья "
+            "это переписка и на каком основании она читается:\n"
+            '    python -m app.chats on all --private --consent '
+            '"служебный аккаунт Smartbooking, рабочая переписка с отелями"'
+        )
+        return 1
     rows = (await s.execute(select(Chat))).scalars().all()
     if not on:
         n = sum(1 for c in rows if c.enabled)
@@ -117,14 +137,16 @@ async def bulk(s, on: bool, history: bool) -> int:
         print(f"Выключено чатов: {n}. Уже сохранённые сообщения остаются.")
         return 0
 
-    enabled = skipped_private = 0
+    enabled = skipped_private = enabled_private = 0
     for c in rows:
+        if c.tg_chat_id == TELEGRAM_SERVICE_ID or c.enabled:
+            continue
         if c.kind == ChatKind.private:
-            if not c.enabled:
+            if not private:
                 skipped_private += 1
-            continue
-        if c.enabled:
-            continue
+                continue
+            c.consent_note = consent
+            enabled_private += 1
         c.enabled = True
         # Чат, который ещё ни разу не читали, начинаем с текущего момента.
         if not history and c.last_seen_msg_id == 0:
@@ -132,7 +154,9 @@ async def bulk(s, on: bool, history: bool) -> int:
         enabled += 1
     await s.commit()
 
-    print(f"Включено групповых чатов: {enabled}.")
+    print(f"Включено чатов: {enabled}, из них личных: {enabled_private}.")
+    if enabled_private:
+        print(f"Запись о согласии: «{consent}».")
     if history:
         print(
             f"История: до {settings.backfill_limit} последних сообщений из каждого. "
@@ -142,8 +166,9 @@ async def bulk(s, on: bool, history: bool) -> int:
         print("Читаются с текущего момента: старые сообщения не берутся.")
     if skipped_private:
         print(
-            f"Личных переписок пропущено: {skipped_private}. Их включают по одной, "
-            "с согласием:\n    python -m app.chats on <№> --consent \"Имя, письменно, дата\""
+            f"Личных переписок пропущено: {skipped_private}. Включить их все:\n"
+            '    python -m app.chats on all --private --consent "основание"\n'
+            "или по одной: python -m app.chats on <№> --consent \"Имя, письменно, дата\""
         )
     print("Воркер подхватит изменения на следующем проходе (раз в 15 минут).")
     return 0
