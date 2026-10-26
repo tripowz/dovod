@@ -21,7 +21,7 @@ from telethon import TelegramClient
 from telethon.tl.types import Channel, User
 
 from ..config import settings
-from ..models import Chat, ChatKind, Message
+from ..models import FROM_NOW, Chat, ChatKind, Message
 
 log = logging.getLogger("dovod.reader")
 
@@ -85,11 +85,22 @@ def classify(dialog) -> ChatKind | None:
     return ChatKind.team
 
 
-async def sync_dialogs(client: TelegramClient, session: AsyncSession) -> int:
-    """Регистрирует новые чаты выключенными. Возвращает число новых."""
+async def sync_dialogs(
+    client: TelegramClient, session: AsyncSession
+) -> tuple[int, dict[int, int]]:
+    """Регистрирует новые чаты выключенными.
+
+    Возвращает число новых чатов и номер последнего сообщения в каждом чате.
+    Список диалогов приходит из Telegram пачками по сотне, поэтому по нему
+    дёшево понять, в каких чатах что-то появилось, и не запрашивать историю
+    сотен молчащих чатов каждые 15 минут.
+    """
     known = {c.tg_chat_id for c in (await session.execute(select(Chat))).scalars()}
     added = 0
+    tops: dict[int, int] = {}
     async for d in client.iter_dialogs():
+        if d.message is not None:
+            tops[d.id] = d.message.id
         kind = classify(d)
         if kind is None or d.id in known:
             continue
@@ -103,7 +114,7 @@ async def sync_dialogs(client: TelegramClient, session: AsyncSession) -> int:
         )
         added += 1
     await session.commit()
-    return added
+    return added, tops
 
 
 def _author(m) -> str | None:
@@ -115,19 +126,35 @@ def _author(m) -> str | None:
     return getattr(s, "title", None)
 
 
-async def fetch_new(client: TelegramClient, session: AsyncSession) -> int:
+async def fetch_new(
+    client: TelegramClient, session: AsyncSession, tops: dict[int, int] | None = None
+) -> int:
     """Забирает новые сообщения из включённых чатов. Возвращает число новых.
 
     Ограничение: за один проход из чата берётся не больше `backfill_limit`
     сообщений. При интервале в 15 минут на пилоте этого с запасом хватает;
     если чат пишет быстрее, старшая часть окна потеряется — это видно по
     разрыву в tg_msg_id и лечится увеличением лимита.
+    `tops` — последние номера сообщений из `sync_dialogs`. Чаты, где нового
+    нет, пропускаются без запроса к Telegram. Чат, включённый «с текущего
+    момента» (`FROM_NOW`), запоминает свой последний номер и историю не берёт.
     """
     chats = (
         await session.execute(select(Chat).where(Chat.enabled.is_(True)))
     ).scalars().all()
     stored = 0
+    tops = tops or {}
     for chat in chats:
+        top_now = tops.get(chat.tg_chat_id)
+        if chat.last_seen_msg_id == FROM_NOW:
+            if top_now is None:
+                latest = await client.get_messages(chat.tg_chat_id, limit=1)
+                top_now = latest[0].id if latest else 0
+            chat.last_seen_msg_id = top_now
+            await session.commit()
+            continue
+        if top_now is not None and top_now <= chat.last_seen_msg_id:
+            continue  # в чате ничего нового — не тревожим Telegram
         existing = set(
             (
                 await session.execute(

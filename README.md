@@ -81,7 +81,12 @@
    ```powershell
    python -m app.chats
    python -m app.chats on 1
+   python -m app.chats on all      # все групповые, с текущего момента
    ```
+
+   `on all` не включает личные переписки (только по одной, с `--consent`) и
+   не берёт историю: иначе сотни чатов разом встали бы в очередь разбора
+   перед свежими обращениями. Нужна история — добавьте `--history`.
 
 7. **Разбор.** `ANTHROPIC_API_KEY` в `.env`, затем воркер:
 
@@ -100,6 +105,7 @@ python tests/test_service.py   # правила: приёмка, SLA, эконо
 python tests/test_api.py       # HTTP: доступ, отказы по правилам
 python tests/test_flow.py      # сценарии: продолжение, отмена, удержание, правило закрытия
 python tests/test_analyze.py   # разбор без модели: фильтр, ссылки, повторный разбор
+python tests/test_chats.py     # источники: массовое включение, чтение с текущего момента
 ```
 
 ## Что ещё не сделано

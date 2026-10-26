@@ -4,6 +4,14 @@
     python -m app.chats on 12                            — включить чат №12
     python -m app.chats on 12 --consent "Азиза, письменно, 11.09.2026"
     python -m app.chats off 12                           — выключить
+    python -m app.chats on all                           — включить все групповые
+    python -m app.chats on all --history                 — то же, с историей
+    python -m app.chats off all                          — выключить все
+
+Массовое включение по умолчанию читает чаты с текущего момента: история
+сотен чатов разом встала бы в очередь разбора перед свежими обращениями
+клиентов. Личные переписки массово не включаются — только по одной и с
+записью о согласии.
 
 Экрана «Источники» в мини-аппе пока нет — это временная замена ему. Правило
 то же, что в API: личную переписку без записи о согласии не включить.
@@ -17,8 +25,9 @@ import sys
 
 from sqlalchemy import select
 
+from .config import settings
 from .db import SessionLocal, init_db
-from .models import Chat, ChatKind
+from .models import FROM_NOW, Chat, ChatKind
 
 KIND = {
     ChatKind.support: "поддержка",
@@ -56,6 +65,8 @@ async def main(argv: list[str]) -> int:
         if argv[0] not in ("on", "off") or len(argv) < 2:
             print(__doc__)
             return 2
+        if argv[1] == "all":
+            return await bulk(s, argv[0] == "on", "--history" in argv)
         try:
             chat_id = int(argv[1])
         except ValueError:
@@ -94,6 +105,48 @@ async def main(argv: list[str]) -> int:
             "(раз в 15 минут) и заберёт до 200 последних сообщений."
         )
         return 0
+
+
+async def bulk(s, on: bool, history: bool) -> int:
+    rows = (await s.execute(select(Chat))).scalars().all()
+    if not on:
+        n = sum(1 for c in rows if c.enabled)
+        for c in rows:
+            c.enabled = False
+        await s.commit()
+        print(f"Выключено чатов: {n}. Уже сохранённые сообщения остаются.")
+        return 0
+
+    enabled = skipped_private = 0
+    for c in rows:
+        if c.kind == ChatKind.private:
+            if not c.enabled:
+                skipped_private += 1
+            continue
+        if c.enabled:
+            continue
+        c.enabled = True
+        # Чат, который ещё ни разу не читали, начинаем с текущего момента.
+        if not history and c.last_seen_msg_id == 0:
+            c.last_seen_msg_id = FROM_NOW
+        enabled += 1
+    await s.commit()
+
+    print(f"Включено групповых чатов: {enabled}.")
+    if history:
+        print(
+            f"История: до {settings.backfill_limit} последних сообщений из каждого. "
+            "Свежие обращения будут ждать, пока разбор не пройдёт старые."
+        )
+    else:
+        print("Читаются с текущего момента: старые сообщения не берутся.")
+    if skipped_private:
+        print(
+            f"Личных переписок пропущено: {skipped_private}. Их включают по одной, "
+            "с согласием:\n    python -m app.chats on <№> --consent \"Имя, письменно, дата\""
+        )
+    print("Воркер подхватит изменения на следующем проходе (раз в 15 минут).")
+    return 0
 
 
 if __name__ == "__main__":

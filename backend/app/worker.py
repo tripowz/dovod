@@ -340,8 +340,8 @@ async def cycle(client) -> None:
     if client is not None:
         try:
             async with SessionLocal() as s:
-                added = await sync_dialogs(client, s)
-                stored = await fetch_new(client, s)
+                added, tops = await sync_dialogs(client, s)
+                stored = await fetch_new(client, s, tops)
             if added or stored:
                 log.info("новых чатов: %d, новых сообщений: %d", added, stored)
         except Exception:
