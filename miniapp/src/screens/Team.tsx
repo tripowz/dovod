@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, haptic } from "../lib/tg";
 import type { Me, StaffManage } from "../lib/types";
-import { Button, Card, Empty, SectionHead } from "../components/ui";
+import { Button, Empty, Group, Loading, Note, Row, SectionHead, Tag } from "../components/ui";
 
 /**
  * Управление командой.
@@ -52,82 +52,75 @@ export default function Team({
       return msg;
     });
 
-  if (!rows) return <div className="py-10 text-center text-[13px] text-muted">Загрузка…</div>;
+  if (!rows) return <Loading />;
 
   const canAdd = tgId.trim().length >= 5 && /^\d+$/.test(tgId.trim()) && name.trim().length >= 2;
 
   return (
     <div>
-      <SectionHead title="Добавить в команду" />
-      <Card>
-        <label className="mb-1 block text-[10.5px] font-bold uppercase tracking-wider text-muted">
-          Telegram ID
-        </label>
-        <input
-          value={tgId}
-          onChange={(e) => setTgId(e.target.value.replace(/[^\d]/g, ""))}
-          inputMode="numeric"
-          placeholder="например 123456789"
-          className="mb-2.5 w-full rounded-lg border border-black/10 bg-surface px-2.5 py-2 text-[13px] outline-none"
-        />
-        <label className="mb-1 block text-[10.5px] font-bold uppercase tracking-wider text-muted">
-          Имя
-        </label>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="как показывать в задачах"
-          className="mb-2.5 w-full rounded-lg border border-black/10 bg-surface px-2.5 py-2 text-[13px] outline-none"
-        />
-        <label className="mb-3 flex items-center gap-2 text-[13px]">
+      <SectionHead title="Добавить в команду" className="!mt-1" />
+      <Group>
+        <label className="flex items-center gap-3 px-4 py-3">
+          <span className="w-[110px] shrink-0 text-[16px]">Telegram ID</span>
           <input
-            type="checkbox"
-            checked={isManager}
-            onChange={(e) => setIsManager(e.target.checked)}
-            className="h-4 w-4"
+            value={tgId}
+            onChange={(e) => setTgId(e.target.value.replace(/[^\d]/g, ""))}
+            inputMode="numeric"
+            placeholder="123456789"
+            className="min-w-0 flex-1 bg-transparent text-right text-[16px] outline-none placeholder:text-muted"
           />
-          Руководитель (видит отчёты, получает сводки)
         </label>
-        <Button className="w-full" disabled={!canAdd} onClick={() => void add()}>
-          Добавить
-        </Button>
-        <p className="mt-2 text-[11px] leading-snug text-muted">
-          ID сотрудник узнаёт, написав боту{" "}
-          <span className="font-mono">@userinfobot</span> команду Start. Без ID вход
-          в приложение невозможен — им проверяется подпись Telegram.
-        </p>
-      </Card>
+        <label className="flex items-center gap-3 px-4 py-3">
+          <span className="w-[110px] shrink-0 text-[16px]">Имя</span>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="как в задачах"
+            className="min-w-0 flex-1 bg-transparent text-right text-[16px] outline-none placeholder:text-muted"
+          />
+        </label>
+        <label className="flex items-center gap-3 px-4 py-2.5">
+          <span className="flex-1 text-[16px]">Руководитель</span>
+          <Switch on={isManager} onChange={setIsManager} />
+        </label>
+      </Group>
+      <Note>
+        Руководитель видит отчёты и получает сводки. ID сотрудник узнаёт, написав боту{" "}
+        <span className="font-mono">@userinfobot</span> команду Start. Без ID вход в приложение
+        невозможен — им проверяется подпись Telegram.
+      </Note>
+      <Button className="mt-3 w-full !py-3" disabled={!canAdd} onClick={() => void add()}>
+        Добавить
+      </Button>
 
       <SectionHead title="Команда" right={rows.filter((r) => r.active).length} />
-      <div className="flex flex-col gap-2">
-        {rows.length === 0 ? (
-          <Empty title="Пока никого">Добавьте первого сотрудника формой выше.</Empty>
-        ) : (
-          rows.map((s) => {
+      {rows.length === 0 ? (
+        <Empty title="Пока никого">Добавьте первого сотрудника формой выше.</Empty>
+      ) : (
+        <Group>
+          {rows.map((s) => {
             const self = s.id === me.id;
             return (
-              <Card key={s.id} className={s.active ? "" : "opacity-55"}>
-                <div className="flex items-center gap-2">
-                  <div className="min-w-0">
-                    <b className="text-[14px] font-semibold">{s.name}</b>
-                    {self && <span className="ml-1.5 text-[11px] text-muted">— вы</span>}
-                    <div className="mt-0.5 font-mono text-[10.5px] text-muted">
-                      id {s.tg_user_id}
-                    </div>
-                  </div>
-                  <span
-                    className={`ml-auto rounded px-2 py-0.5 text-[10.5px] font-bold ${
-                      s.is_manager ? "bg-link/12 text-link" : "bg-muted/15 text-muted"
-                    }`}
-                  >
-                    {s.is_manager ? "руководитель" : "поддержка"}
+              <Row key={s.id} className={s.active ? "" : "opacity-55"}>
+                <div className="flex items-center gap-3">
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-accent/15 text-[16px] font-semibold text-accent">
+                    {s.name.slice(0, 1)}
                   </span>
+                  <div className="min-w-0 flex-1">
+                    <b className="text-[16px] font-semibold">{s.name}</b>
+                    {self && <span className="ml-1.5 text-[13px] text-muted">— вы</span>}
+                    <div className="font-mono text-[12px] text-muted">id {s.tg_user_id}</div>
+                  </div>
+                  <Tag className={s.is_manager ? "bg-link/12 text-link" : "bg-fill text-muted"}>
+                    {s.is_manager ? "руководитель" : "поддержка"}
+                  </Tag>
                 </div>
 
                 {!self && (
-                  <div className="mt-2.5 flex flex-wrap gap-1.5 border-t border-black/6 pt-2.5">
+                  <div className="mt-3 flex flex-wrap gap-2 pl-[52px]">
                     <Button
                       variant="ghost"
+                      className="!px-3 !py-2 !text-[14px]"
                       onClick={() =>
                         void patch(
                           s,
@@ -141,6 +134,7 @@ export default function Team({
                     {s.active ? (
                       <Button
                         variant="danger"
+                        className="!px-3 !py-2 !text-[14px]"
                         onClick={() => void patch(s, { active: false }, `${s.name} отключён`)}
                       >
                         Отключить
@@ -148,6 +142,7 @@ export default function Team({
                     ) : (
                       <Button
                         variant="ghost"
+                        className="!px-3 !py-2 !text-[14px]"
                         onClick={() => void patch(s, { active: true }, `${s.name} включён`)}
                       >
                         Включить
@@ -155,11 +150,32 @@ export default function Team({
                     )}
                   </div>
                 )}
-              </Card>
+              </Row>
             );
-          })
-        )}
-      </div>
+          })}
+        </Group>
+      )}
     </div>
+  );
+}
+
+/** Переключатель iOS. */
+function Switch({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      onClick={() => onChange(!on)}
+      className={`relative h-[31px] w-[51px] shrink-0 rounded-full transition-colors ${
+        on ? "bg-moss" : "bg-fill"
+      }`}
+    >
+      <span
+        className={`absolute left-[2px] top-[2px] h-[27px] w-[27px] rounded-full bg-white shadow-[0_3px_8px_rgba(0,0,0,0.15),0_1px_1px_rgba(0,0,0,0.16)] transition-transform ${
+          on ? "translate-x-[20px]" : ""
+        }`}
+      />
+    </button>
   );
 }

@@ -175,18 +175,18 @@ def toast(page: Page, click) -> str:
     получить сообщение от предыдущего действия. Первый прогон так и врал —
     каждая проверка видела тост соседней.
     """
-    old = page.locator(".bottom-20").all_inner_texts()
+    old = page.locator("[role=status]").all_inner_texts()
     click()
     try:
         page.wait_for_function(
-            "prev => { const el = document.querySelector('.bottom-20');"
+            "prev => { const el = document.querySelector('[role=status]');"
             " return el !== null && el.innerText !== prev; }",
             arg=old[0] if old else "",
             timeout=6000,
         )
     except Exception:  # noqa: BLE001
         return ""
-    return page.locator(".bottom-20").first.inner_text()
+    return page.locator("[role=status]").first.inner_text()
 
 
 def visible(page: Page, text: str | re.Pattern, timeout: int = 5000) -> bool:
@@ -231,10 +231,10 @@ def as_manager(browser, base: str) -> list[str]:
     page.get_by_role("button", name=re.compile("Синхронизация тарифов")).first.click()
     check("в карточке есть критерий готовности", visible(page, "Критерий готовности"))
     review = page.get_by_role("button", name="На проверке", exact=True)
-    check("задача стоит на проверке после применения", "shadow-sm" in (review.get_attribute("class") or ""))
+    check("задача стоит на проверке после применения", review.get_attribute("aria-pressed") == "true")
     check("метка сообщения в нити по-русски", visible(page, re.compile(r"^решение$")))
     shot(page, "04_manager_task_detail")
-    page.get_by_role("button", name="‹ К списку").click()
+    page.locator("main").get_by_role("button", name="Задачи", exact=True).click()
 
     tab(page, "Заявки")
     check("разбор ИИ готов к открытию чата", visible(page, re.compile(r"^Разбор ИИ$")))

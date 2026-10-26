@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../lib/tg";
 import type { StaffMetric, StaffReportOut } from "../lib/types";
-import { Card, Empty, SectionHead, plural } from "../components/ui";
+import { Card, Empty, Loading, Note, SectionHead, Segmented, Tag, plural } from "../components/ui";
 
 /**
  * Метрики сотрудников за период.
@@ -35,8 +35,8 @@ function reply(min: number | null): string {
  * Стрелка динамики к прошлому периоду.
  *
  * Куда «хорошо» — зависит от показателя, и это знает вызывающий: для закрытых
- * задач рост хорош, для возвратов и времени ответа хорош спад. Зелёного в
- * палитре нет, поэтому хорошее — спокойным link-синим, тревожное — clay.
+ * задач рост хорош, для возвратов и времени ответа хорош спад. Хорошее —
+ * зелёным (moss), тревожное — красным (clay).
  * Ничего не рисуем при нуле или когда сравнивать не с чем.
  */
 function Delta({ value, goodWhenDown = false }: { value: number | null; goodWhenDown?: boolean }) {
@@ -44,7 +44,7 @@ function Delta({ value, goodWhenDown = false }: { value: number | null; goodWhen
   const down = value < 0;
   const good = goodWhenDown ? down : !down;
   return (
-    <span className={`ml-1 text-[10px] font-semibold ${good ? "text-link" : "text-clay"}`}>
+    <span className={`ml-1 text-[11px] font-semibold ${good ? "text-moss" : "text-clay"}`}>
       {down ? "↓" : "↑"}
       {Math.abs(value)}
     </span>
@@ -66,13 +66,13 @@ function Stat({
     <div>
       <div className="flex items-baseline">
         <span
-          className={`font-mono text-[17px] font-bold leading-none ${tone === "bad" ? "text-clay" : "text-ink"}`}
+          className={`text-[20px] font-bold leading-none tabular-nums ${tone === "bad" ? "text-clay" : "text-ink"}`}
         >
           {value}
         </span>
         {delta}
       </div>
-      <div className="mt-1 text-[10px] uppercase tracking-wide text-muted">{label}</div>
+      <div className="mt-1 text-[12px] text-muted">{label}</div>
     </div>
   );
 }
@@ -91,15 +91,16 @@ function PersonCard({ m }: { m: StaffMetric }) {
           : "в оценку";
 
   return (
-    <Card className="!p-3">
-      <div className="mb-2.5 flex items-baseline gap-2">
-        <b className="text-[14px] font-semibold">{m.name}</b>
+    <Card>
+      <div className="mb-3 flex items-center gap-2">
+        <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent/15 text-[14px] font-semibold text-accent">
+          {m.name.slice(0, 1)}
+        </span>
+        <b className="text-[16px] font-semibold">{m.name}</b>
         {m.reworks > 0 && (
-          <span className="rounded bg-clay/12 px-1.5 py-0.5 text-[10px] font-bold text-clay">
-            брак {Math.round(m.rework_rate * 100)}%
-          </span>
+          <Tag className="bg-clay/12 text-clay">брак {Math.round(m.rework_rate * 100)}%</Tag>
         )}
-        <span className="ml-auto text-[10.5px] text-muted">
+        <span className="ml-auto text-right text-[12px] text-muted">
           открыто {m.open_now}
           {m.review_now > 0 && ` · на проверке ${m.review_now}`}
         </span>
@@ -125,7 +126,7 @@ function PersonCard({ m }: { m: StaffMetric }) {
         />
       </div>
 
-      <div className="mt-2.5 flex items-center gap-3 border-t border-black/6 pt-2 text-[11px] text-muted">
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t-[0.5px] border-sep pt-2.5 text-[12.5px] text-muted">
         {m.overdue_now > 0 ? (
           <span className="font-semibold text-clay">
             просрочено {m.overdue_now}{" "}
@@ -160,19 +161,11 @@ export default function StaffMetrics() {
     <div>
       {/* Переключатель периода. Неделя — для разговора один на один, месяц —
           чтобы единичная плохая неделя не выглядела как тенденция. */}
-      <div className="mb-3 flex gap-1 rounded-xl bg-surface p-1">
-        {PERIODS.map((p) => (
-          <button
-            key={p.days}
-            onClick={() => setDays(p.days)}
-            className={`flex-1 rounded-lg px-3 py-1.5 text-[12px] font-semibold ${
-              days === p.days ? "bg-bg text-ink shadow-sm" : "text-muted"
-            }`}
-          >
-            {p.label}
-          </button>
-        ))}
-      </div>
+      <Segmented
+        value={days}
+        onChange={setDays}
+        options={PERIODS.map((p) => ({ key: p.days, label: p.label }))}
+      />
 
       <SectionHead
         title="Кто как работал"
@@ -180,26 +173,26 @@ export default function StaffMetrics() {
       />
 
       {loading && !data ? (
-        <div className="py-10 text-center text-[13px] text-muted">Загрузка…</div>
+        <Loading />
       ) : !data || data.staff.length === 0 ? (
         <Empty title="Нет данных">
           За выбранный период никто не вёл задач и не отвечал на заявки.
         </Empty>
       ) : (
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-2.5">
           {data.staff.map((m) => (
             <PersonCard key={m.staff_id} m={m} />
           ))}
         </div>
       )}
 
-      <p className="mb-4 mt-3 px-1 text-[11px] leading-snug text-muted">
-        Стрелка — сравнение с предыдущим таким же периодом: синяя — движение в
+      <Note className="mb-4 mt-3">
+        Стрелка — сравнение с предыдущим таким же периодом: зелёная — движение в
         хорошую сторону, красная — в плохую. Возврат на доработку — это задача,
         которую автор вернул с проверки: самый честный признак того, что работа
         была сдана недоделанной. Считается из истории задач, а не со слов
         исполнителя.
-      </p>
+      </Note>
     </div>
   );
 }

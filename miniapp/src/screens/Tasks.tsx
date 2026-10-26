@@ -2,12 +2,21 @@ import { useEffect, useState } from "react";
 import { api, haptic } from "../lib/tg";
 import type { Me, TaskFull, TaskRow, TaskStatus } from "../lib/types";
 import {
+  Back,
+  Button,
   Card,
+  Choice,
   Empty,
+  Group,
   Heat,
+  Loading,
   ModuleChip,
+  Note,
   Priority,
+  Row,
   SectionHead,
+  Segmented,
+  Tag,
   TypeChip,
   plural,
 } from "../components/ui";
@@ -88,45 +97,33 @@ export default function Tasks({
         onRework={rework}
       />
     );
-  if (!rows) return <div className="py-10 text-center text-[13px] text-muted">Загрузка…</div>;
+  if (!rows) return <Loading />;
 
   return (
     <div>
-      <div className="mb-2 flex gap-1.5 overflow-x-auto pb-1">
+      <div className="-mx-4 mb-3 flex gap-2 overflow-x-auto px-4 pb-1">
         {SCOPES.map(([key, label]) => (
-          <button
-            key={key}
-            onClick={() => setScope(key)}
-            className={`shrink-0 rounded-full border px-3 py-1.5 text-[12px] font-semibold ${
-              scope === key
-                ? "border-ink bg-ink text-bg"
-                : "border-black/8 bg-bg text-ink/70"
-            }`}
-          >
+          <Choice key={key} on={scope === key} onClick={() => setScope(key)} className="shrink-0">
             {label}
-          </button>
+          </Choice>
         ))}
       </div>
 
       {rows.length === 0 ? (
         <Empty title="Здесь пусто">По этому фильтру задач нет — и это хорошая новость.</Empty>
       ) : (
-        <div className="flex flex-col gap-2">
+        <Group>
           {rows.map((t) => (
-            <Card key={t.ref} onClick={() => void openTask(t.ref)}>
+            <Row key={t.ref} onClick={() => void openTask(t.ref)}>
               <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
                 <TypeChip type={t.type} />
                 <ModuleChip module={t.module} />
                 <Priority value={t.priority} />
-                {t.overdue && (
-                  <span className="rounded bg-clay/12 px-2 py-0.5 text-[10.5px] font-bold text-clay">
-                    срок прошёл
-                  </span>
-                )}
+                {t.overdue && <Tag className="bg-clay/12 text-clay">срок прошёл</Tag>}
               </div>
-              <p className="m-0 text-[14px] font-semibold leading-snug">{t.title}</p>
-              <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11.5px] text-muted">
-                <b className="font-semibold text-ink/70">{t.assignee ?? "не назначен"}</b>
+              <p className="m-0 text-[16px] font-semibold leading-snug">{t.title}</p>
+              <div className="mt-1 flex flex-wrap items-center gap-1 text-[13px] text-muted">
+                <span className="text-ink/75">{t.assignee ?? "не назначен"}</span>
                 {t.hotel && <span>· {t.hotel}</span>}
                 {t.notes_count > 0 && (
                   <span>
@@ -135,9 +132,9 @@ export default function Tasks({
                 )}
               </div>
               <Heat days={t.idle_days} overdue={t.overdue} />
-            </Card>
+            </Row>
           ))}
-        </div>
+        </Group>
       )}
     </div>
   );
@@ -163,181 +160,153 @@ function Detail({
   const canReturn = task.status === "review" && (task.can_accept || me.is_manager);
 
   return (
-    <div className="flex flex-col gap-3">
-      <button onClick={onBack} className="self-start text-[13px] font-semibold text-link">
-        ‹ К списку
-      </button>
+    <div className="flex flex-col">
+      <Back onClick={onBack}>Задачи</Back>
 
-      <div className="flex flex-wrap items-center gap-1.5">
-        <span className="rounded bg-surface px-2 py-0.5 font-mono text-[11px] font-bold">
-          {task.ref}
-        </span>
+      <div className="mt-3 flex flex-wrap items-center gap-1.5">
+        <Tag className="bg-fill font-mono text-ink">{task.ref}</Tag>
         <TypeChip type={task.type} />
         <ModuleChip module={task.module} />
         <Priority value={task.priority} />
       </div>
 
-      <h2 className="m-0 text-[17px] font-bold leading-tight">{task.title}</h2>
-      <div className="text-[11.5px] text-muted">
+      <h2 className="m-0 mt-2 text-[22px] font-bold leading-tight tracking-[-0.01em]">{task.title}</h2>
+      <div className="mt-1 text-[14px] text-muted">
         {task.assignee ?? "не назначен"} · автор — {task.author ?? "неизвестен"}
         {task.due_at && ` · до ${new Date(task.due_at).toLocaleDateString("ru-RU")}`}
       </div>
       <Heat days={task.idle_days} overdue={task.overdue} />
 
-      <div>
-        <SectionHead title="Статус" />
-        <div className="grid grid-cols-4 gap-1 rounded-xl bg-surface p-1">
-          {STATUS.map((s) => {
-            // «Готово» ставит только автор — это и есть механизм против
-            // «сделал и забыл». Кнопка гасится, а не молча ничего не делает.
-            const blocked = s.key === "done" && !task.can_accept;
-            return (
-              <button
-                key={s.key}
-                disabled={blocked}
-                onClick={() => onStatus(task.ref, s.key)}
-                className={`rounded-lg px-1 py-1.5 text-[10.5px] font-semibold leading-tight disabled:opacity-40 ${
-                  task.status === s.key ? "bg-bg text-ink shadow-sm" : "text-muted"
-                }`}
-              >
-                {s.label}
-              </button>
-            );
-          })}
-        </div>
-        <p className="mt-1.5 text-[11px] leading-snug text-muted">
-          {task.can_accept
-            ? "Вы автор этой задачи — принимать работу вам."
-            : `Автор задачи — ${task.author ?? "другой человек"}. Вы можете сдать работу на проверку, но принять её может только автор.`}
-        </p>
+      <SectionHead title="Статус" />
+      {/* «Готово» ставит только автор — это и есть механизм против
+          «сделал и забыл». Кнопка гасится, а не молча ничего не делает. */}
+      <Segmented
+        value={task.status}
+        onChange={(k) => onStatus(task.ref, k)}
+        options={STATUS.map((s) => ({
+          key: s.key,
+          label: <span className="text-[12px]">{s.label}</span>,
+          disabled: s.key === "done" && !task.can_accept,
+        }))}
+      />
+      <Note>
+        {task.can_accept
+          ? "Вы автор этой задачи — принимать работу вам."
+          : `Автор задачи — ${task.author ?? "другой человек"}. Вы можете сдать работу на проверку, но принять её может только автор.`}
+      </Note>
 
-        {canReturn && (
-          <div className="mt-2">
-            {!reworkOpen ? (
-              <button
-                onClick={() => setReworkOpen(true)}
-                className="rounded-xl bg-clay/12 px-3 py-2 text-[12.5px] font-semibold text-clay"
-              >
-                Вернуть на доработку
-              </button>
-            ) : (
-              <div className="rounded-xl border border-clay/30 bg-clay/5 p-2.5">
-                <textarea
-                  value={reason}
-                  onChange={(e) => setReason(e.target.value)}
-                  rows={3}
-                  placeholder="Причина возврата: что доделать и почему работа не принята"
-                  className="w-full resize-none rounded-lg border border-black/10 bg-bg px-2.5 py-2 text-[12.5px] leading-snug outline-none"
-                />
-                <div className="mt-1.5 flex gap-1.5">
-                  <button
-                    disabled={reason.trim().length < 3}
-                    onClick={() => {
-                      onRework(task.ref, reason.trim());
-                      setReworkOpen(false);
-                      setReason("");
-                    }}
-                    className="rounded-lg bg-clay px-3 py-2 text-[12.5px] font-semibold text-white disabled:opacity-40"
-                  >
-                    Отправить возврат
-                  </button>
-                  <button
-                    onClick={() => {
-                      setReworkOpen(false);
-                      setReason("");
-                    }}
-                    className="rounded-lg bg-surface px-3 py-2 text-[12.5px] font-semibold text-ink/70"
-                  >
-                    Отмена
-                  </button>
-                </div>
+      {canReturn && (
+        <div className="mt-3">
+          {!reworkOpen ? (
+            <Button variant="danger" className="w-full" onClick={() => setReworkOpen(true)}>
+              Вернуть на доработку
+            </Button>
+          ) : (
+            <Card>
+              <textarea
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                rows={3}
+                placeholder="Причина возврата: что доделать и почему работа не принята"
+                className="field"
+              />
+              <div className="mt-2 flex gap-2">
+                <button
+                  disabled={reason.trim().length < 3}
+                  onClick={() => {
+                    onRework(task.ref, reason.trim());
+                    setReworkOpen(false);
+                    setReason("");
+                  }}
+                  className="tap flex-1 rounded-[12px] bg-clay px-3 py-2.5 text-[15px] font-semibold text-white disabled:opacity-40"
+                >
+                  Отправить возврат
+                </button>
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    setReworkOpen(false);
+                    setReason("");
+                  }}
+                >
+                  Отмена
+                </Button>
               </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div>
-        <SectionHead title="Критерий готовности" />
-        <div className="rounded-xl bg-surface px-3 py-2.5 text-[12.5px] leading-snug text-ink/80">
-          {task.dod}
+            </Card>
+          )}
         </div>
-      </div>
+      )}
+
+      <SectionHead title="Критерий готовности" />
+      <Card className="text-[15px] leading-snug">{task.dod}</Card>
 
       {task.notes.length > 0 && (
-        <div>
-          <SectionHead title={`Заметки · ${task.notes.length}`} />
-          <div className="flex flex-col gap-2">
+        <>
+          <SectionHead title="Заметки" right={task.notes.length} />
+          <Group>
             {task.notes.map((n, i) => (
-              <div
-                key={i}
-                className={`rounded-xl px-3 py-2.5 ${
-                  n.role === "manager"
-                    ? "border-l-[2.5px] border-link bg-link/8"
-                    : "border-l-[2.5px] border-black/10 bg-surface"
-                }`}
-              >
-                <div className="mb-1 flex items-center gap-2">
-                  <b className="text-[12px] font-semibold">{n.author}</b>
-                  <span className="rounded border border-black/8 bg-bg px-1.5 text-[9.5px] font-bold uppercase tracking-wider text-muted">
+              <Row key={i}>
+                <div className="mb-0.5 flex items-center gap-2">
+                  <b className="text-[14px] font-semibold">{n.author}</b>
+                  <Tag className={n.role === "manager" ? "bg-link/12 text-link" : "bg-fill text-muted"}>
                     {n.role === "manager" ? "руководитель" : "исполнитель"}
-                  </span>
+                  </Tag>
                 </div>
-                <p className="m-0 text-[12.5px] leading-snug text-ink/75">{n.text}</p>
-              </div>
+                <p className="m-0 text-[14px] leading-snug text-ink/80">{n.text}</p>
+              </Row>
             ))}
-          </div>
-        </div>
+          </Group>
+        </>
       )}
 
       {task.thread.length > 0 && (
-        <div>
-          <SectionHead title={`Нить из чатов · ${task.thread.length}`} />
-          <div className="flex flex-col gap-2.5">
+        <>
+          <SectionHead title="Нить из чатов" right={task.thread.length} />
+          <Group>
             {task.thread.map((m, i) => (
-              <div key={i} className="text-[12.5px]">
+              <Row key={i}>
                 <div className="mb-0.5 flex items-center gap-2">
-                  <b className="text-[12px] font-semibold">{m.author ?? "—"}</b>
-                  <span className="rounded bg-surface px-1.5 text-[10px] text-muted">
-                    {THREAD_TAG[m.tag] ?? m.tag}
-                  </span>
-                  <time className="ml-auto font-mono text-[10px] text-muted">
+                  <b className="text-[14px] font-semibold">{m.author ?? "—"}</b>
+                  <Tag className="bg-fill text-muted">{THREAD_TAG[m.tag] ?? m.tag}</Tag>
+                  <time className="ml-auto text-[12px] text-muted">
                     {new Date(m.sent_at).toLocaleDateString("ru-RU")}
                   </time>
                 </div>
-                <p className="m-0 leading-snug text-ink/75">{m.text}</p>
-              </div>
+                <p className="m-0 text-[14px] leading-snug text-ink/80">{m.text}</p>
+              </Row>
             ))}
-          </div>
-        </div>
+          </Group>
+        </>
       )}
 
-      <div>
-        <SectionHead title="История" />
-        <div className="flex flex-col gap-2">
+      <SectionHead title="История" />
+      <Card>
+        <div className="flex flex-col">
           {task.events.map((e, i) => (
-            <div key={i} className="flex gap-2.5 text-[12.5px]">
+            <div key={i} className="relative flex gap-3 pb-3 last:pb-0">
+              {i < task.events.length - 1 && (
+                <span className="absolute bottom-0 left-[4.5px] top-4 w-px bg-sep" />
+              )}
               <i
-                className={`mt-1.5 block h-2 w-2 shrink-0 rounded-full ${
-                  e.pending ? "border border-muted/50" : "bg-link"
+                className={`relative mt-1.5 block h-2.5 w-2.5 shrink-0 rounded-full ${
+                  e.pending ? "border-[1.5px] border-muted/60 bg-bg" : "bg-accent"
                 }`}
               />
               <div>
-                <b className="font-semibold">{e.text}</b>
-                <time className="block font-mono text-[10.5px] text-muted">
+                <div className="text-[14px] font-medium leading-snug">{e.text}</div>
+                <time className="block text-[12px] text-muted">
                   {e.pending ? "ожидание" : new Date(e.at).toLocaleString("ru-RU")}
                 </time>
               </div>
             </div>
           ))}
         </div>
-      </div>
+      </Card>
 
-      <p className="pb-4 text-[11px] leading-snug text-muted">
+      <Note className="pb-4">
         Задачу можно изменить, объединить с дублем или отменить как ошибочно созданную —
         тогда сообщения вернутся в разбор, а не исчезнут.
-      </p>
-      {me.is_manager && <div className="h-1" />}
+      </Note>
     </div>
   );
 }

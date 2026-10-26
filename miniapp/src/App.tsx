@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiError, api, initTelegram, notify, outsideTelegram, tg } from "./lib/tg";
+import { ApiError, api, haptic, initTelegram, notify, outsideTelegram, tg } from "./lib/tg";
+import { Loading, Segmented } from "./components/ui";
 import type { Me } from "./lib/types";
 import Inbox from "./screens/Inbox";
 import Tasks from "./screens/Tasks";
@@ -14,6 +15,40 @@ type Tab = "inbox" | "tasks" | "tickets" | "clients" | "report" | "team";
 // как работал за период. Они не конкурируют за место в нижней навигации,
 // поэтому переключаются здесь, а не отдельной шестой вкладкой.
 type ReportView = "digest" | "staff";
+
+/** Иконки таб-бара: контурные, в один штрих, как SF Symbols. */
+const ICON: Record<Tab, JSX.Element> = {
+  inbox: (
+    <path d="M3 13.5 5.6 5.2A1.8 1.8 0 0 1 7.3 4h9.4a1.8 1.8 0 0 1 1.7 1.2L21 13.5M3 13.5V18a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-4.5M3 13.5h5l1.5 2.5h5l1.5-2.5h5" />
+  ),
+  tasks: (
+    <>
+      <rect x="4" y="4" width="16" height="16" rx="4" />
+      <path d="m8.5 12.2 2.4 2.4 4.6-5" />
+    </>
+  ),
+  tickets: (
+    <path d="M20 12a8 8 0 0 1-11.6 7.1L4 20l1-4.1A8 8 0 1 1 20 12Z" />
+  ),
+  clients: (
+    <>
+      <path d="M4 20V7.5L12 4l8 3.5V20" />
+      <path d="M9 20v-5h6v5M8.5 10h.01M12 10h.01M15.5 10h.01" />
+    </>
+  ),
+  report: (
+    <>
+      <path d="M5 20V12M10 20V6M15 20v-9M20 20V4" />
+    </>
+  ),
+  team: (
+    <>
+      <circle cx="9" cy="8.5" r="3.2" />
+      <path d="M3.5 19.5c.6-3 2.8-4.8 5.5-4.8s4.9 1.8 5.5 4.8" />
+      <path d="M15.5 5.6a3 3 0 0 1 0 5.8M17.5 14.9c1.6.6 2.7 2.2 3 4.6" />
+    </>
+  ),
+};
 
 const TABS: { key: Tab; label: string; managerOnly?: boolean }[] = [
   { key: "inbox", label: "Входящие" },
@@ -89,16 +124,20 @@ export default function App() {
 
   if (error)
     return (
-      <div className="mx-auto max-w-md px-5 py-16 text-center">
-        <div className="mb-3 text-[34px]">🎯</div>
-        <h1 className="mb-2 text-lg font-bold">Довод</h1>
-        <p className="text-[13px] leading-relaxed text-muted">{error}</p>
+      <div className="mx-auto max-w-md px-6 py-20 text-center">
+        <div className="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-[18px] bg-accent text-[30px] shadow-[0_6px_20px_rgba(0,122,255,0.3)]">
+          🎯
+        </div>
+        <h1 className="mb-2 text-[22px] font-bold">Довод</h1>
+        <p className="text-[15px] leading-relaxed text-muted">{error}</p>
       </div>
     );
 
   if (!me)
     return (
-      <div className="px-5 py-20 text-center text-[13px] text-muted">Проверяем доступ…</div>
+      <div className="min-h-screen bg-surface pt-24">
+        <Loading />
+      </div>
     );
 
   const visible = TABS.filter((t) => !t.managerOnly || me.is_manager);
@@ -106,36 +145,27 @@ export default function App() {
 
   return (
     <div className="flex min-h-screen flex-col bg-surface text-ink">
-      <header className="flex items-center gap-3 border-b border-black/6 bg-bg px-4 py-2.5">
-        <div className="min-w-0">
-          <b className="block text-[14.5px] font-bold tracking-tight">{title}</b>
-          <span className="block text-[11px] text-muted">{subtitle}</span>
-        </div>
+      <header className="px-4 pb-2 pt-4">
+        <h1 className="m-0 text-[32px] font-bold leading-tight tracking-[-0.02em]">{title}</h1>
+        <span className="block text-[14px] text-muted">{subtitle}</span>
       </header>
 
-      <main className="flex-1 overflow-y-auto px-3 pb-4 pt-3">
+      <main className="flex-1 px-4 pb-[calc(84px+env(safe-area-inset-bottom))] pt-2">
         {tab === "inbox" && <Inbox guard={guard} />}
         {tab === "tasks" && <Tasks me={me} guard={guard} />}
         {tab === "tickets" && <Tickets guard={guard} />}
         {tab === "clients" && <Clients guard={guard} />}
         {tab === "report" && (
           <>
-            <div className="mb-3 flex gap-1 rounded-xl bg-surface p-1">
-              {([
-                ["digest", "Сводка"],
-                ["staff", "Метрики"],
-              ] as [ReportView, string][]).map(([key, label]) => (
-                <button
-                  key={key}
-                  onClick={() => setReportView(key)}
-                  className={`flex-1 rounded-lg px-3 py-1.5 text-[12px] font-semibold ${
-                    reportView === key ? "bg-bg text-ink shadow-sm" : "text-muted"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
+            <Segmented
+              className="mb-4"
+              value={reportView}
+              onChange={setReportView}
+              options={[
+                { key: "digest", label: "Сводка" },
+                { key: "staff", label: "Метрики" },
+              ]}
+            />
             {reportView === "digest" ? <Report me={me} /> : <StaffMetrics />}
           </>
         )}
@@ -143,22 +173,42 @@ export default function App() {
       </main>
 
       {toast && (
-        <div className="pointer-events-none fixed inset-x-3 bottom-20 z-40 rounded-xl bg-ink px-3.5 py-2.5 text-[12.5px] leading-snug text-bg shadow-lg">
+        <div
+          role="status"
+          className="pointer-events-none fixed inset-x-4 bottom-[calc(76px+env(safe-area-inset-bottom))] z-40 rounded-[14px] bg-ink/90 px-4 py-3 text-[14px] leading-snug text-bg shadow-[0_8px_30px_rgba(0,0,0,0.18)] backdrop-blur">
           {toast}
         </div>
       )}
 
       <nav
         style={{ gridTemplateColumns: `repeat(${visible.length}, minmax(0, 1fr))` }}
-        className="grid shrink-0 border-t border-black/6 bg-bg px-1 pb-[env(safe-area-inset-bottom)] pt-1.5">
+        className="fixed inset-x-0 bottom-0 z-30 grid border-t-[0.5px] border-sep bg-bg/85 px-1 pb-[max(env(safe-area-inset-bottom),6px)] pt-1.5 backdrop-blur-xl backdrop-saturate-150"
+      >
         {visible.map((t) => (
           <button
             key={t.key}
-            onClick={() => setTab(t.key)}
-            className={`rounded-xl px-1 py-1.5 text-[9.5px] font-semibold ${
-              tab === t.key ? "text-link" : "text-muted"
+            onClick={() => {
+              haptic("light");
+              setTab(t.key);
+              window.scrollTo({ top: 0 });
+            }}
+            className={`flex flex-col items-center gap-0.5 py-0.5 text-[10px] font-medium ${
+              tab === t.key ? "text-accent" : "text-muted"
             }`}
           >
+            <svg
+              width="26"
+              height="26"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={tab === t.key ? 2.1 : 1.7}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              {ICON[t.key]}
+            </svg>
             {t.label}
           </button>
         ))}

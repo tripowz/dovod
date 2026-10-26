@@ -8,17 +8,32 @@ html,
 body,
 #root {
   min-height: 100%;
-  background: var(--tg-theme-secondary-bg-color, #f3f6f5);
+  background: var(--tg-theme-secondary-bg-color, #f2f2f7);
 }
 
 body {
   margin: 0;
-  font-family: Onest, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, "Segoe UI", Roboto,
+    sans-serif;
+  letter-spacing: -0.01em;
   -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* Полосы прокрутки внутри Telegram выглядят инородно. */
 ::-webkit-scrollbar {
   width: 0;
   height: 0;
+}
+
+@layer components {
+  /* Поле ввода в духе iOS: серая заливка вместо рамки. */
+  .field {
+    @apply w-full resize-none rounded-[10px] bg-fill px-3 py-2.5 text-[15px] leading-snug text-ink outline-none placeholder:text-muted focus:ring-2 focus:ring-accent/40;
+  }
+
+  /* Нажатие видно сразу — как у системных ячеек. */
+  .tap {
+    @apply transition-opacity duration-100 active:opacity-60;
+  }
 }

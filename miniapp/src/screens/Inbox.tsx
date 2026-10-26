@@ -1,7 +1,20 @@
 import { useEffect, useState } from "react";
 import { api, haptic } from "../lib/tg";
 import type { Inbox as InboxData, Proposal, TaskType } from "../lib/types";
-import { Button, Card, Empty, TYPE_LABEL, plural } from "../components/ui";
+import {
+  Back,
+  Badge,
+  Button,
+  Card,
+  Choice,
+  Empty,
+  FieldLabel,
+  Loading,
+  Segmented,
+  Tag,
+  TYPE_LABEL,
+  plural,
+} from "../components/ui";
 
 const KIND_LABEL: Record<string, string> = {
   new_task: "новый запрос",
@@ -14,10 +27,10 @@ const KIND_LABEL: Record<string, string> = {
 
 const KIND_CLASS: Record<string, string> = {
   progress: "bg-link/12 text-link",
-  deadline: "bg-ochre/12 text-ochre",
+  deadline: "bg-ochre/15 text-ochre",
   scope: "bg-link/12 text-link",
   duplicate: "bg-link/12 text-link",
-  question: "bg-muted/15 text-muted",
+  question: "bg-fill text-muted",
 };
 
 /** На чём основана связь с задачей. Реплай и упоминание надёжны, смысловая
@@ -129,146 +142,118 @@ export default function Inbox({
         return r.message;
       });
 
-    const opt = (on: boolean) =>
-      `rounded-lg border px-2.5 py-1.5 text-[12.5px] font-semibold ${
-        on ? "border-accent bg-accent text-onAccent" : "border-black/8 bg-surface text-ink/75"
-      }`;
+    const pick = <K,>(label: React.ReactNode, items: [K, string][], cur: K, set: (k: K) => void, mono = false) => (
+      <div>
+        <FieldLabel>{label}</FieldLabel>
+        <div className="flex flex-wrap gap-2">
+          {items.map(([k, l]) => (
+            <Choice
+              key={String(k)}
+              on={cur === k}
+              onClick={() => set(k)}
+              className={mono ? "font-mono !text-[12.5px]" : ""}
+            >
+              {l}
+            </Choice>
+          ))}
+        </div>
+      </div>
+    );
 
     return (
-      <div className="flex flex-col gap-3 pb-4">
-        <button onClick={() => setForm(null)} className="self-start text-[13px] font-semibold text-link">
-          ‹ Назад
-        </button>
-        <h2 className="m-0 text-[17px] font-bold">Новая задача</h2>
-
-        <div className="rounded-r-lg border-l-[2.5px] border-link bg-bg px-2.5 py-2">
-          <div className="mb-0.5 text-[11.5px] font-semibold text-link">
-            {form.p.author} · {form.p.chat}
-          </div>
-          <p className="m-0 text-[13px] leading-snug">{form.p.text}</p>
+      <div className="flex flex-col gap-5 pb-4">
+        <div className="flex flex-col gap-3">
+          <Back onClick={() => setForm(null)} />
+          <h2 className="m-0 text-[22px] font-bold tracking-[-0.01em]">Новая задача</h2>
         </div>
 
-        <label className="flex flex-col gap-1">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-muted">Что сделать</span>
+        <Card>
+          <div className="mb-1 text-[13px] font-semibold text-link">
+            {form.p.author} · {form.p.chat}
+          </div>
+          <p className="m-0 text-[15px] leading-snug">{form.p.text}</p>
+        </Card>
+
+        <label className="block">
+          <FieldLabel>Что сделать</FieldLabel>
           <textarea
             rows={2}
             value={form.title}
             onChange={(e) => setForm({ ...form, title: e.target.value })}
-            className="rounded-xl border border-black/10 bg-bg px-3 py-2 text-[13px] outline-none focus:border-accent"
+            className="field !bg-bg"
           />
         </label>
 
-        <div className="flex flex-col gap-1">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-muted">
-            Тип <span className="normal-case tracking-normal text-clay">— предложил бот</span>
-          </span>
-          <div className="flex flex-wrap gap-1.5">
-            {TYPES.map((t) => (
-              <button key={t} className={opt(form.type === t)} onClick={() => setForm({ ...form, type: t })}>
-                {TYPE_LABEL[t]}
-              </button>
-            ))}
-          </div>
-        </div>
+        {pick(
+          <>
+            Тип <span className="text-ochre">— предложил бот</span>
+          </>,
+          TYPES.map((t) => [t, TYPE_LABEL[t]] as [TaskType, string]),
+          form.type,
+          (type) => setForm({ ...form, type }),
+        )}
 
-        <div className="flex flex-col gap-1">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-muted">Часть системы</span>
-          <div className="flex flex-wrap gap-1.5">
-            {MODULES.map((m) => (
-              <button
-                key={m}
-                className={`${opt(form.module === m)} font-mono !text-[11px]`}
-                onClick={() => setForm({ ...form, module: m })}
-              >
-                {m}
-              </button>
-            ))}
-          </div>
-        </div>
+        {pick(
+          "Часть системы",
+          MODULES.map((m) => [m, m] as [string, string]),
+          form.module,
+          (module) => setForm({ ...form, module }),
+          true,
+        )}
 
-        <div className="flex flex-col gap-1">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-muted">
-            Ответственный <span className="normal-case tracking-normal text-clay">— один</span>
-          </span>
-          <div className="flex flex-wrap gap-1.5">
-            {staff.map((s) => (
-              <button
-                key={s.id}
-                className={opt(form.assignee === s.id)}
-                onClick={() => setForm({ ...form, assignee: s.id })}
-              >
-                {s.name}
-              </button>
-            ))}
-          </div>
-        </div>
+        {pick(
+          <>
+            Ответственный <span className="text-ochre">— один</span>
+          </>,
+          staff.map((x) => [x.id, x.name] as [number | null, string]),
+          form.assignee,
+          (assignee) => setForm({ ...form, assignee }),
+        )}
 
-        <div className="flex flex-col gap-1">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-muted">Срок</span>
-          <div className="flex flex-wrap gap-1.5">
-            {DUES.map(([days, label]) => (
-              <button key={days} className={opt(form.due === days)} onClick={() => setForm({ ...form, due: days })}>
-                {label}
-              </button>
-            ))}
-          </div>
-        </div>
+        {pick("Срок", DUES, form.due, (due) => setForm({ ...form, due }))}
 
-        <label className="flex flex-col gap-1">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-muted">
-            Критерий готовности <span className="normal-case tracking-normal text-clay">обязателен</span>
-          </span>
+        <label className="block">
+          <FieldLabel>
+            Критерий готовности <span className="text-clay">— обязателен</span>
+          </FieldLabel>
           <textarea
             rows={3}
             value={form.dod}
             onChange={(e) => setForm({ ...form, dod: e.target.value })}
-            className="rounded-xl border border-black/10 bg-bg px-3 py-2 text-[13px] outline-none focus:border-accent"
+            className="field !bg-bg"
           />
-          <span className="text-[11px] leading-snug text-muted">
+          <span className="mt-1.5 block px-1 text-[12.5px] leading-snug text-muted">
             По этой фразе автор решит, принимать работу или вернуть. Без неё задачу создать нельзя.
           </span>
         </label>
 
-        <Button disabled={!valid} onClick={() => void submit()}>
+        <Button className="w-full !py-3.5 !text-[17px]" disabled={!valid} onClick={() => void submit()}>
           {valid ? "Создать задачу" : "Заполните обязательные поля"}
         </Button>
       </div>
     );
   }
 
-  if (!data) return <div className="py-10 text-center text-[13px] text-muted">Загрузка…</div>;
+  if (!data) return <Loading />;
 
   const list = seg === "new" ? data.new : data.updates;
 
   return (
     <div>
-      <div className="mb-2 grid grid-cols-2 gap-1 rounded-xl bg-surface p-1">
-        {(
-          [
-            ["new", "Новые запросы", data.new.length],
-            ["upd", "Продолжения", data.updates.length],
-          ] as const
-        ).map(([key, label, n]) => (
-          <button
-            key={key}
-            onClick={() => setSeg(key)}
-            className={`flex items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-[12.5px] font-semibold ${
-              seg === key ? "bg-bg text-ink shadow-sm" : "text-muted"
-            }`}
-          >
-            {label}
-            {n > 0 && (
-              <em className="rounded-lg bg-clay px-1.5 font-mono text-[10px] not-italic text-white">{n}</em>
-            )}
-          </button>
-        ))}
-      </div>
+      <Segmented
+        value={seg}
+        onChange={setSeg}
+        options={[
+          { key: "new", label: <>Новые запросы <Badge n={data.new.length} /></> },
+          { key: "upd", label: <>Продолжения <Badge n={data.updates.length} /></> },
+        ]}
+      />
 
-      <div className="px-1 pb-2.5 text-[11.5px] leading-snug text-muted">
-        Бот разобрал <b className="font-mono text-ink/70">{data.scanned}</b>{" "}
+      <p className="mx-4 mb-3 mt-2 text-[13px] leading-snug text-muted">
+        Бот разобрал <b className="font-semibold text-ink/75">{data.scanned}</b>{" "}
         {plural(data.scanned, ["сообщение", "сообщения", "сообщений"])}, отсеял{" "}
-        <b className="font-mono text-ink/70">{data.filtered}</b> как разговоры.
-      </div>
+        <b className="font-semibold text-ink/75">{data.filtered}</b> как разговоры.
+      </p>
 
       {list.length === 0 ? (
         <Empty title={seg === "new" ? "Новых запросов нет" : "Продолжений нет"}>
@@ -277,38 +262,36 @@ export default function Inbox({
             : "Всё, что бот услышал по текущим задачам, уже применено к карточкам."}
         </Empty>
       ) : (
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-3">
           {list.map((p) => (
             <Card key={p.id}>
-              <div className="mb-2 flex flex-wrap items-center gap-1.5">
-                <span
-                  className={`rounded px-2 py-0.5 text-[10.5px] font-bold ${
+              <div className="mb-2.5 flex flex-wrap items-center gap-1.5">
+                <Tag
+                  className={
                     p.orphan ? "bg-clay/12 text-clay" : (KIND_CLASS[p.kind] ?? "bg-link/12 text-link")
-                  }`}
+                  }
                 >
                   {p.orphan ? "задачи больше нет" : (KIND_LABEL[p.kind] ?? p.kind)}
-                </span>
+                </Tag>
                 {p.kind === "new_task" && (
-                  <span className="rounded bg-surface px-2 py-0.5 font-mono text-[10px] text-muted">
-                    {Math.round(p.confidence * 100)}%
-                  </span>
+                  <Tag className="bg-fill text-muted">{Math.round(p.confidence * 100)}%</Tag>
                 )}
-                <span className="ml-auto truncate font-mono text-[10.5px] text-muted">{p.chat}</span>
+                <span className="ml-auto truncate text-[12px] text-muted">{p.chat}</span>
               </div>
 
               {p.task_ref && (
-                <div className="mb-2 flex items-center gap-2 rounded-xl border border-black/6 bg-surface px-2.5 py-2 text-[12.5px]">
-                  <span className="font-mono text-[11.5px] font-bold text-link">{p.task_ref}</span>
-                  <span className="min-w-0 flex-1 truncate text-ink/70">
+                <div className="mb-2.5 flex items-center gap-2 rounded-[10px] bg-fill px-3 py-2 text-[14px]">
+                  <span className="font-mono text-[12.5px] font-semibold text-link">{p.task_ref}</span>
+                  <span className="min-w-0 flex-1 truncate text-ink/75">
                     {p.orphan ? "объединена или отменена" : p.task_title}
                   </span>
                 </div>
               )}
 
-              <div className="rounded-r-lg border-l-[2.5px] border-link bg-surface px-2.5 py-2">
-                <div className="mb-0.5 flex items-center gap-2 text-[11.5px] font-semibold text-link">
+              <div className="rounded-[12px] rounded-tl-[4px] bg-fill px-3 py-2.5">
+                <div className="mb-0.5 flex items-center gap-2 text-[13px] font-semibold text-link">
                   {p.author}
-                  <time className="ml-auto font-mono text-[10.5px] font-normal text-muted">
+                  <time className="ml-auto text-[12px] font-normal text-muted">
                     {new Date(p.sent_at).toLocaleString("ru-RU", {
                       day: "numeric",
                       month: "short",
@@ -317,30 +300,30 @@ export default function Inbox({
                     })}
                   </time>
                 </div>
-                <p className="m-0 text-[13px] leading-snug">{p.text}</p>
+                <p className="m-0 text-[15px] leading-snug">{p.text}</p>
               </div>
 
               {p.reading && (
-                <div className="mt-2.5 border-l-2 border-black/10 pl-3 text-[12.5px] leading-snug text-ink/70">
-                  <span className="mb-0.5 block text-[10px] font-bold uppercase tracking-wider text-muted">
+                <div className="mt-3 text-[14px] leading-snug text-ink/75">
+                  <span className="mb-0.5 block text-[12px] font-medium text-muted">
                     Бот понял так
                   </span>
                   {p.reading}
                 </div>
               )}
               {p.action && (
-                <div className="mt-1.5 border-l-2 border-link pl-3 text-[12.5px] leading-snug">
-                  <span className="mb-0.5 block text-[10px] font-bold uppercase tracking-wider text-link">
+                <div className="mt-2.5 text-[14px] leading-snug">
+                  <span className="mb-0.5 block text-[12px] font-medium text-link">
                     Предлагает
                   </span>
                   {p.action}
                 </div>
               )}
               {p.link_basis && BASIS_LABEL[p.link_basis] && (
-                <div className="mt-1.5 text-[10.5px] text-muted">{BASIS_LABEL[p.link_basis]}</div>
+                <div className="mt-2 text-[12px] text-muted">{BASIS_LABEL[p.link_basis]}</div>
               )}
 
-              <div className="mt-3 flex gap-1.5">
+              <div className="mt-3.5 flex gap-2">
                 <Button
                   className="flex-1"
                   onClick={() => (p.kind === "new_task" ? openForm(p) : void apply(p))}
