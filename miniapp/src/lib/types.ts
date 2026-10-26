@@ -11,6 +11,15 @@ export interface Me {
   wip_limit: number;
 }
 
+export interface StaffManage {
+  id: number;
+  tg_user_id: number;
+  name: string;
+  is_manager: boolean;
+  wip_limit: number;
+  active: boolean;
+}
+
 export interface TaskRow {
   ref: string;
   title: string;

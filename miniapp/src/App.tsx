@@ -7,8 +7,9 @@ import Tickets from "./screens/Tickets";
 import Clients from "./screens/Clients";
 import Report from "./screens/Report";
 import StaffMetrics from "./screens/StaffMetrics";
+import Team from "./screens/Team";
 
-type Tab = "inbox" | "tasks" | "tickets" | "clients" | "report";
+type Tab = "inbox" | "tasks" | "tickets" | "clients" | "report" | "team";
 // Внутри «Отчёта» две разные вещи: сводка — что горит сейчас, метрики — кто
 // как работал за период. Они не конкурируют за место в нижней навигации,
 // поэтому переключаются здесь, а не отдельной шестой вкладкой.
@@ -20,6 +21,7 @@ const TABS: { key: Tab; label: string; managerOnly?: boolean }[] = [
   { key: "tickets", label: "Заявки" },
   { key: "clients", label: "Клиенты" },
   { key: "report", label: "Отчёт", managerOnly: true },
+  { key: "team", label: "Команда", managerOnly: true },
 ];
 
 const TITLES: Record<Tab, [string, string]> = {
@@ -28,6 +30,7 @@ const TITLES: Record<Tab, [string, string]> = {
   tickets: ["Заявки", "Обращения отелей и SLA"],
   clients: ["Клиенты", "Здоровье отелей и удержание"],
   report: ["Отчёт", "Сводка и качество работы"],
+  team: ["Команда", "Доступ и роли сотрудников"],
 };
 
 export default function App() {
@@ -136,6 +139,7 @@ export default function App() {
             {reportView === "digest" ? <Report me={me} /> : <StaffMetrics />}
           </>
         )}
+        {tab === "team" && <Team me={me} guard={guard} />}
       </main>
 
       {toast && (

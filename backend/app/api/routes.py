@@ -138,6 +138,20 @@ class VerdictIn(BaseModel):
     note: str = Field(default="", max_length=2000)
 
 
+class StaffCreate(BaseModel):
+    tg_user_id: int
+    name: str = Field(min_length=2, max_length=160)
+    is_manager: bool = False
+    wip_limit: int = Field(default=6, ge=1, le=50)
+
+
+class StaffPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=160)
+    is_manager: bool | None = None
+    active: bool | None = None
+    wip_limit: int | None = Field(default=None, ge=1, le=50)
+
+
 class TaskCreate(BaseModel):
     title: str = Field(min_length=6, max_length=300)
     dod: str = Field(min_length=9)
@@ -1012,6 +1026,100 @@ async def list_staff(
         )
     ).scalars().all()
     return [{"id": s.id, "name": s.name, "is_manager": s.is_manager} for s in rows]
+
+
+def _staff_full(s: Staff) -> dict:
+    return {
+        "id": s.id,
+        "tg_user_id": s.tg_user_id,
+        "name": s.name,
+        "is_manager": s.is_manager,
+        "wip_limit": s.wip_limit,
+        "active": s.active,
+    }
+
+
+@router.get("/staff/manage")
+async def manage_staff_list(
+    staff: Staff = Depends(current_manager),
+    session: AsyncSession = Depends(get_session),
+):
+    """Полный список команды для управления — включая отключённых. Руководителю."""
+    rows = (
+        await session.execute(
+            select(Staff).order_by(Staff.active.desc(), Staff.name)
+        )
+    ).scalars().all()
+    return [_staff_full(s) for s in rows]
+
+
+@router.post("/staff", status_code=201)
+async def add_staff(
+    body: StaffCreate,
+    staff: Staff = Depends(current_manager),
+    session: AsyncSession = Depends(get_session),
+):
+    """Добавляет сотрудника по Telegram ID. Руководителю.
+
+    Вход в мини-апп — по этому ID: пока человека тут нет, приложение его не
+    пустит. Если ID уже заведён (например, был отключён), не плодим второго, а
+    возвращаем на это внятную ошибку — дубль по Telegram ID сломал бы вход.
+    """
+    dup = (
+        await session.execute(select(Staff).where(Staff.tg_user_id == body.tg_user_id))
+    ).scalar_one_or_none()
+    if dup is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Этот Telegram ID уже у «{dup.name}»"
+            + ("" if dup.active else " (отключён — включите его в списке)"),
+        )
+    s = Staff(
+        tg_user_id=body.tg_user_id,
+        name=body.name,
+        is_manager=body.is_manager,
+        wip_limit=body.wip_limit,
+    )
+    session.add(s)
+    await session.commit()
+    await session.refresh(s)
+    return _staff_full(s)
+
+
+@router.patch("/staff/{staff_id}")
+async def edit_staff(
+    staff_id: int,
+    body: StaffPatch,
+    staff: Staff = Depends(current_manager),
+    session: AsyncSession = Depends(get_session),
+):
+    """Меняет имя, роль, WIP-лимит или отключает сотрудника. Руководителю.
+
+    Себя нельзя разжаловать или отключить: иначе руководитель одним нажатием
+    закрывает себе доступ в раздел, из которого это делается, — и чинить уже
+    некому.
+    """
+    s = (
+        await session.execute(select(Staff).where(Staff.id == staff_id))
+    ).scalar_one_or_none()
+    if s is None:
+        raise HTTPException(404, "Сотрудник не найден")
+    if s.id == staff.id and (body.is_manager is False or body.active is False):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Нельзя снять с себя роль руководителя или отключить себя.",
+        )
+    if body.name is not None:
+        s.name = body.name
+    if body.is_manager is not None:
+        s.is_manager = body.is_manager
+    if body.active is not None:
+        s.active = body.active
+    if body.wip_limit is not None:
+        s.wip_limit = body.wip_limit
+    await session.commit()
+    await session.refresh(s)
+    return _staff_full(s)
 
 
 _THREAD_TAG = {
