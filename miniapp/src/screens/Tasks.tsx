@@ -69,7 +69,25 @@ export default function Tasks({
       return `Статус: ${STATUS.find((s) => s.key === status)?.label}`;
     });
 
-  if (open) return <Detail task={open} me={me} onBack={() => setOpen(null)} onStatus={setStatus} />;
+  const rework = (ref: string, reason: string) =>
+    guard(async () => {
+      haptic("medium");
+      const r = await api.post<{ message: string }>(`/tasks/${ref}/rework`, { reason });
+      await openTask(ref);
+      await load();
+      return r.message;
+    });
+
+  if (open)
+    return (
+      <Detail
+        task={open}
+        me={me}
+        onBack={() => setOpen(null)}
+        onStatus={setStatus}
+        onRework={rework}
+      />
+    );
   if (!rows) return <div className="py-10 text-center text-[13px] text-muted">Загрузка…</div>;
 
   return (
@@ -130,12 +148,20 @@ function Detail({
   me,
   onBack,
   onStatus,
+  onRework,
 }: {
   task: TaskFull;
   me: Me;
   onBack: () => void;
   onStatus: (ref: string, s: TaskStatus) => void;
+  onRework: (ref: string, reason: string) => void;
 }) {
+  const [reworkOpen, setReworkOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  // Вернуть с проверки вправе автор (приёмщик) или руководитель — проверка со
+  // стороны руководителя и есть смысл возврата.
+  const canReturn = task.status === "review" && (task.can_accept || me.is_manager);
+
   return (
     <div className="flex flex-col gap-3">
       <button onClick={onBack} className="self-start text-[13px] font-semibold text-link">
@@ -184,6 +210,51 @@ function Detail({
             ? "Вы автор этой задачи — принимать работу вам."
             : `Автор задачи — ${task.author ?? "другой человек"}. Вы можете сдать работу на проверку, но принять её может только автор.`}
         </p>
+
+        {canReturn && (
+          <div className="mt-2">
+            {!reworkOpen ? (
+              <button
+                onClick={() => setReworkOpen(true)}
+                className="rounded-xl bg-clay/12 px-3 py-2 text-[12.5px] font-semibold text-clay"
+              >
+                Вернуть на доработку
+              </button>
+            ) : (
+              <div className="rounded-xl border border-clay/30 bg-clay/5 p-2.5">
+                <textarea
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  rows={3}
+                  placeholder="Причина возврата: что доделать и почему работа не принята"
+                  className="w-full resize-none rounded-lg border border-black/10 bg-bg px-2.5 py-2 text-[12.5px] leading-snug outline-none"
+                />
+                <div className="mt-1.5 flex gap-1.5">
+                  <button
+                    disabled={reason.trim().length < 3}
+                    onClick={() => {
+                      onRework(task.ref, reason.trim());
+                      setReworkOpen(false);
+                      setReason("");
+                    }}
+                    className="rounded-lg bg-clay px-3 py-2 text-[12.5px] font-semibold text-white disabled:opacity-40"
+                  >
+                    Отправить возврат
+                  </button>
+                  <button
+                    onClick={() => {
+                      setReworkOpen(false);
+                      setReason("");
+                    }}
+                    className="rounded-lg bg-surface px-3 py-2 text-[12.5px] font-semibold text-ink/70"
+                  >
+                    Отмена
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div>

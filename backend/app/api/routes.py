@@ -128,6 +128,10 @@ class StatusIn(BaseModel):
     status: TaskStatus
 
 
+class ReworkIn(BaseModel):
+    reason: str = Field(min_length=3, max_length=2000)
+
+
 class TaskCreate(BaseModel):
     title: str = Field(min_length=6, max_length=300)
     dod: str = Field(min_length=9)
@@ -423,6 +427,29 @@ async def set_status(
         raise _guard(exc) from None
     await session.commit()
     return {"ok": True, "status": t.status.value}
+
+
+@router.post("/tasks/{ref}/rework")
+async def return_task_to_rework(
+    ref: str,
+    body: ReworkIn,
+    staff: Staff = Depends(current_staff),
+    session: AsyncSession = Depends(get_session),
+):
+    """Возврат задачи с проверки на доработку с причиной.
+
+    Отрицательный исход приёмки: решает автор задачи или руководитель. Причина
+    обязательна — она и указание исполнителю, и обучающий сигнал агенту.
+    """
+    t = (await session.execute(_task_query().where(Task.ref == ref))).scalar_one_or_none()
+    if t is None:
+        raise HTTPException(404, "Задача не найдена")
+    try:
+        service.return_to_rework(t, staff, body.reason, now())
+    except service.RuleViolation as exc:
+        raise _guard(exc) from None
+    await session.commit()
+    return {"ok": True, "status": t.status.value, "message": f"{t.ref} вернули на доработку"}
 
 
 @router.post("/tasks/{ref}/notes", status_code=201)

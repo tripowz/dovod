@@ -21,6 +21,7 @@ from .models import (
     Task,
     TaskEvent,
     TaskStatus,
+    TaskType,
     Ticket,
     TicketStatus,
 )
@@ -101,6 +102,18 @@ def change_status(task: Task, new: TaskStatus, actor: Staff, now: datetime) -> N
             "Дубль и отмена оформляются отдельными действиями — "
             "они переносят сообщения обратно в разбор."
         )
+    # Баг нельзя сдать на проверку или принять без срока. Решение (критерий
+    # готовности) у задачи обязательно всегда; для бага к нему добавляется срок:
+    # «починим когда-нибудь» — это не закрытый баг, а забытый.
+    if (
+        task.type == TaskType.bug
+        and new in (TaskStatus.review, TaskStatus.done)
+        and task.due_at is None
+    ):
+        raise RuleViolation(
+            "У бага не указан срок. Поставьте срок устранения, прежде чем "
+            "сдавать его на проверку или принимать."
+        )
 
     task.status = new
     task.last_moved_at = now
@@ -112,6 +125,38 @@ def change_status(task: Task, new: TaskStatus, actor: Staff, now: datetime) -> N
         add_event(task, "Ждёт начала работы", pending=True)
     else:
         clear_pending(task)
+
+
+def return_to_rework(task: Task, actor: Staff, reason: str, now: datetime) -> None:
+    """Возврат задачи с проверки обратно в работу — отрицательный исход приёмки.
+
+    Приёмка задачи — право автора; вернуть её вправе автор или руководитель:
+    проверка со стороны руководителя и есть смысл возврата. Возврат без причины
+    запрещён: по причине исполнитель понимает, что доделать, а агент учится на
+    том, почему работа не прошла, — пустой возврат теряет и то, и другое.
+
+    Статус уходит в «В работе» тем же событием, что и обычный старт
+    («Статус изменён на „В работе"»), поэтому метрика возвратов (которая считает
+    повторные входы в работу из истории) засчитывает его автоматически.
+    """
+    if task.status != TaskStatus.review:
+        raise RuleViolation(
+            "Вернуть на доработку можно только задачу, сданную на проверку."
+        )
+    if task.author_id and actor.id != task.author_id and not actor.is_manager:
+        raise RuleViolation(
+            "Вернуть на доработку может автор задачи или руководитель."
+        )
+    reason = (reason or "").strip()
+    if not reason:
+        raise RuleViolation(
+            "Укажите причину возврата: что именно доделать и почему работа не принята."
+        )
+    task.status = TaskStatus.in_progress
+    task.last_moved_at = now
+    clear_pending(task)
+    add_event(task, _status_event_text(TaskStatus.in_progress), actor.name)
+    add_event(task, f"Вернул на доработку — {actor.name}: {reason}", actor.name)
 
 
 # --------------------------------------------------------------------------
