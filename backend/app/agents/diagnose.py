@@ -278,7 +278,10 @@ async def run_diagnosis(session: AsyncSession, ticket_ref: str) -> Diagnosis | N
     knowledge = (
         await session.execute(
             select(Knowledge)
-            .where(Knowledge.module.in_([ticket.module, Module.unknown]))
+            .where(
+                Knowledge.module.in_([ticket.module, Module.unknown]),
+                Knowledge.active.is_(True),
+            )
             .order_by(Knowledge.kind, Knowledge.slug)
         )
     ).scalars().all()

@@ -85,7 +85,9 @@ async def load_knowledge(session) -> dict:
             updated += 1
 
     for slug, row in existing.items():
-        if slug not in on_disk:
+        # Сгенерированные из задач записи файлами не управляются — их не трогаем,
+        # иначе самопополнение стиралось бы при каждой загрузке курированной базы.
+        if slug not in on_disk and not row.generated:
             await session.delete(row)
             removed += 1
 

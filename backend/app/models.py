@@ -565,6 +565,14 @@ class Knowledge(Base):
     # Откуда факт: репозитории и ключевые файлы. Чтобы знание можно было
     # перепроверить по коду, а не верить ему на слово.
     source: Mapped[str] = mapped_column(String(500), default="")
+    # Сгенерировано из закрытой задачи, а не написано в файле. Загрузчик базы
+    # удаляет записи, под которыми нет файла-источника; сгенерированные он
+    # трогать не должен, иначе самопополнение стиралось бы на каждом прогоне.
+    generated: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    task_ref: Mapped[str] = mapped_column(String(16), default="")  # из какой задачи
+    # Выдаётся ли агенту. Метка разобранной задачи без урока хранится (чтобы не
+    # разбирать повторно), но неактивна — в диагноз не подмешивается.
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
     )

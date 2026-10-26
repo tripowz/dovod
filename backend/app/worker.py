@@ -26,6 +26,7 @@ from sqlalchemy.orm import selectinload
 from . import service
 from .agents.analyze import OPEN_STATUSES, analyze_pending
 from .agents.diagnose import run_diagnosis
+from .agents.learn import distill_task
 from .bot.telegram import BotError, send, send_morning_digest, send_weekly_report
 from .config import settings
 from .db import SessionLocal, init_db
@@ -37,6 +38,7 @@ from .models import (
     Escalation,
     Hotel,
     HotelContact,
+    Knowledge,
     Message,
     Module,
     Proposal,
@@ -45,6 +47,7 @@ from .models import (
     Rule,
     Staff,
     Task,
+    TaskStatus,
     TaskType,
     Ticket,
     TicketStatus,
@@ -295,6 +298,44 @@ async def auto_diagnose() -> int:
     return done
 
 
+async def learn_from_closed_tasks() -> int:
+    """Пополняет базу знаний из закрытых задач-багов/проблем.
+
+    Берёт задачи в статусе «Готово», по которым ещё нет записи базы (ни урока,
+    ни метки «без урока»), и отдаёт агенту на дистилляцию. Потолок за проход
+    бережёт бюджет: закрытые задачи не горят, хвост разберётся позже. Возвращает
+    число задач, из которых извлечён многоразовый урок.
+    """
+    if not settings.learn_from_tasks_enabled or not settings.anthropic_api_key:
+        return 0
+    async with SessionLocal() as s:
+        processed = select(Knowledge.task_ref).where(Knowledge.task_ref != "")
+        refs = (
+            await s.execute(
+                select(Task.ref)
+                .where(
+                    Task.status == TaskStatus.done,
+                    Task.type.in_([TaskType.bug, TaskType.problem]),
+                    Task.ref.notin_(processed),
+                )
+                .order_by(Task.last_moved_at.desc())
+                .limit(settings.learn_max_per_cycle)
+            )
+        ).scalars().all()
+
+    learned = 0
+    for ref in refs:
+        try:
+            async with SessionLocal() as s:
+                if await distill_task(s, ref) is not None:
+                    learned += 1
+        except Exception:
+            log.exception("обучение по %s упало", ref)
+    if refs:
+        log.info("обучение из задач: разобрано %d, с уроком %d", len(refs), learned)
+    return learned
+
+
 async def cycle(client) -> None:
     if client is not None:
         try:
@@ -320,6 +361,10 @@ async def cycle(client) -> None:
         await auto_diagnose()
     except Exception:
         log.exception("авто-диагноз упал")
+    try:
+        await learn_from_closed_tasks()
+    except Exception:
+        log.exception("обучение из задач упало")
 
 
 async def main() -> None:
