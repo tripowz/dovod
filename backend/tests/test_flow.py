@@ -75,17 +75,25 @@ async def seed() -> None:
         open_task = Task(ref="SB-101", title="Синк тарифов падает по ночам",
                          definition_of_done="Три ночи логи чистые", type=TaskType.bug,
                          module=Module.cm, status=TaskStatus.in_progress,
-                         assignee_id=tim.id, author_id=bek.id, last_moved_at=now)
+                         assignee_id=tim.id, author_id=bek.id, last_moved_at=now,
+                         due_at=now + timedelta(days=3))
+        # Баг без срока: сдать на проверку его нельзя (правило в service.py).
+        no_due_bug = Task(ref="SB-103", title="Отчёт по загрузке считает не те даты",
+                          definition_of_done="Отчёт совпадает с выгрузкой", type=TaskType.bug,
+                          module=Module.pms, status=TaskStatus.in_progress,
+                          assignee_id=tim.id, author_id=bek.id, last_moved_at=now)
         closed_task = Task(ref="SB-102", title="Старая задача", definition_of_done="Сделано давно",
                            type=TaskType.request, module=Module.pms, status=TaskStatus.done,
                            assignee_id=tim.id, author_id=bek.id, last_moved_at=now)
         open_task.events = []
         closed_task.events = []
-        s.add_all([open_task, closed_task])
+        no_due_bug.events = []
+        s.add_all([open_task, closed_task, no_due_bug])
         await s.flush()
 
         texts = ["выкатил, проверьте", "по старой задаче тоже сделал",
-                 "у Registon не приходит бронь", "а филиалы как хранить?"]
+                 "у Registon не приходит бронь", "а филиалы как хранить?",
+                 "отчёт поправил, гляньте"]
         msgs = [Message(chat_id=chat.id, tg_msg_id=i, author_name="Тимур", text=t,
                         sent_at=now, analyzed_at=now) for i, t in enumerate(texts, 1)]
         s.add_all(msgs)
@@ -103,6 +111,9 @@ async def seed() -> None:
             Proposal(message_id=msgs[3].id, kind=ProposalKind.question, task_id=open_task.id,
                      link_basis="reply", reading="вопрос по задаче", action="добавить в нить",
                      confidence=0.8),
+            Proposal(message_id=msgs[4].id, kind=ProposalKind.progress, task_id=no_due_bug.id,
+                     link_basis="mention", reading="исполнитель сообщил о правке",
+                     action="сдать на проверку", confidence=0.9),
         ])
         s.add(Rule(code="close_without_reply", title="Заявка закрыта без ответа", enabled=False))
         s.add_all([
@@ -128,6 +139,13 @@ async def main() -> None:
 
         r = await c.post("/api/proposals/1/apply", headers=dev)
         check("повторное применение отвергается", r.status_code == 409, f"{r.status_code}")
+
+        # --- баг без срока на проверку не сдаётся ---
+        r = await c.post("/api/proposals/5/apply", headers=dev)
+        check("баг без срока не сдаётся на проверку",
+              r.status_code == 409 and "срок" in r.json().get("detail", ""), r.text[:90])
+        t = (await c.get("/api/tasks/SB-103", headers=boss)).json()
+        check("баг без срока остался в работе", t["status"] == "in_progress", t["status"])
 
         # --- продолжение закрытой задачи: честный отказ, не мнимый успех ---
         r = await c.post("/api/proposals/2/apply", headers=dev)
