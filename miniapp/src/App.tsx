@@ -105,7 +105,10 @@ export default function App() {
   const [title, subtitle] = TITLES[tab];
 
   return (
-    <div className="flex min-h-screen flex-col bg-surface text-ink">
+    // Высота ровно в экран, а не «минимум экран»: иначе страница растёт с
+    // содержимым, и нижняя навигация уезжает под длинный список — на телефоне
+    // до неё приходилось долистывать каждый раздел. Листается только середина.
+    <div className="flex h-[100dvh] flex-col bg-surface text-ink">
       <header className="flex items-center gap-3 border-b border-black/6 bg-bg px-4 py-2.5">
         <div className="min-w-0">
           <b className="block text-[14.5px] font-bold tracking-tight">{title}</b>
@@ -113,7 +116,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="flex-1 overflow-y-auto px-3 pb-4 pt-3">
+      <main className="min-h-0 flex-1 overflow-y-auto px-3 pb-4 pt-3">
         {tab === "inbox" && <Inbox guard={guard} />}
         {tab === "tasks" && <Tasks me={me} guard={guard} />}
         {tab === "tickets" && <Tickets guard={guard} />}

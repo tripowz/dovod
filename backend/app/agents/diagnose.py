@@ -337,8 +337,15 @@ async def run_diagnosis(session: AsyncSession, ticket_ref: str) -> Diagnosis | N
     except ValueError:
         module = Module.unknown
 
+    # Последний диагноз обращения. Их может быть несколько: оценённые остаются
+    # в истории (см. ниже), поэтому берём самый свежий, а не «единственный».
     existing = (
-        await session.execute(select(Diagnosis).where(Diagnosis.ticket_id == ticket.id))
+        await session.execute(
+            select(Diagnosis)
+            .where(Diagnosis.ticket_id == ticket.id)
+            .order_by(Diagnosis.id.desc())
+            .limit(1)
+        )
     ).scalar_one_or_none()
     fields = dict(
         summary=str(result.get("summary") or "")[:400],
@@ -350,7 +357,11 @@ async def run_diagnosis(session: AsyncSession, ticket_ref: str) -> Diagnosis | N
         confidence=_clamp(result.get("confidence")),
         model=model,
     )
-    if existing is None:
+    if existing is None or existing.verdict != DiagnosisVerdict.pending:
+        # Оценённый человеком диагноз не переписываем: иначе к новому тексту
+        # прилипала бы старая оценка («мимо» без кнопок), а в обучение уходила
+        # бы пара «новый диагноз + поправка к старому». Он остаётся в истории
+        # как пример, новый получает чистую оценку.
         existing = Diagnosis(ticket_id=ticket.id, task_id=ticket.task_id, **fields)
         session.add(existing)
     else:

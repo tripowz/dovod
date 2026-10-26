@@ -622,6 +622,9 @@ async def list_tickets(
                 select(Diagnosis)
                 .options(selectinload(Diagnosis.suggested_assignee))
                 .where(Diagnosis.ticket_id.in_([t.id for t in rows]))
+                # По возрастанию id: в словаре остаётся последний — у обращения
+                # бывает несколько диагнозов (оценённые хранятся как история).
+                .order_by(Diagnosis.id)
             )
         ).scalars().all()
         diag_by_ticket = {d.ticket_id: d for d in diag_rows if d.ticket_id is not None}
@@ -725,8 +728,14 @@ async def diagnosis_verdict(
     t = (await session.execute(select(Ticket.id).where(Ticket.ref == ref))).scalar_one_or_none()
     if t is None:
         raise HTTPException(404, "Заявка не найдена")
+    # Оценивается последний диагноз: прежние уже оценены и лежат в истории.
     d = (
-        await session.execute(select(Diagnosis).where(Diagnosis.ticket_id == t))
+        await session.execute(
+            select(Diagnosis)
+            .where(Diagnosis.ticket_id == t)
+            .order_by(Diagnosis.id.desc())
+            .limit(1)
+        )
     ).scalar_one_or_none()
     if d is None:
         raise HTTPException(404, "У заявки ещё нет диагноза")

@@ -42,7 +42,8 @@ export default function Team({
       setName("");
       setIsManager(false);
       await load();
-      return `${s.name} добавлен${s.is_manager ? " (руководитель)" : ""}`;
+      // Без рода в тексте: «Малика добавлен» режет глаз, а пол по имени угадывать нельзя.
+      return `В команде: ${s.name}${s.is_manager ? " (руководитель)" : ""}`;
     });
 
   const patch = (s: StaffManage, body: Partial<StaffManage>, msg: string) =>
@@ -141,14 +142,14 @@ export default function Team({
                     {s.active ? (
                       <Button
                         variant="danger"
-                        onClick={() => void patch(s, { active: false }, `${s.name} отключён`)}
+                        onClick={() => void patch(s, { active: false }, `Отключено: ${s.name}`)}
                       >
                         Отключить
                       </Button>
                     ) : (
                       <Button
                         variant="ghost"
-                        onClick={() => void patch(s, { active: true }, `${s.name} включён`)}
+                        onClick={() => void patch(s, { active: true }, `Снова в команде: ${s.name}`)}
                       >
                         Включить
                       </Button>
