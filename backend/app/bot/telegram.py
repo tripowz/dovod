@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy import select
@@ -120,12 +120,11 @@ async def compose_digest(staff: Staff) -> str:
 
 
 async def compose_staff_report(days: int = 7) -> str:
-    """Текст недельного отчёта по сотрудникам для Telegram.
+    """Текст недельного отчёта по сотрудникам для Telegram, с динамикой.
 
     Грузит историю задач вместе с ними: возвраты на доработку считаются из неё,
     и до-загрузка по одной задаче превратила бы отчёт в сотни запросов.
     """
-    since = _now() - timedelta(days=days)
     async with SessionLocal() as s:
         tasks = (
             await s.execute(
@@ -138,8 +137,8 @@ async def compose_staff_report(days: int = 7) -> str:
         staff_rows = (
             await s.execute(select(Staff).where(Staff.active.is_(True)))
         ).scalars().all()
-    rows = service.build_staff_report(
-        list(staff_rows), list(tasks), list(tickets), _now(), since
+    rows = service.build_staff_report_trend(
+        list(staff_rows), list(tasks), list(tickets), _now(), days
     )
     return service.staff_report_text(rows, days).replace("*", "")
 

@@ -25,11 +25,22 @@ from sqlalchemy.orm import selectinload
 
 from . import service
 from .agents.analyze import OPEN_STATUSES, analyze_pending
+from .agents.diagnose import run_diagnosis
 from .bot.telegram import BotError, send, send_morning_digest, send_weekly_report
 from .config import settings
 from .db import SessionLocal, init_db
 from .ingest.reader import fetch_new, make_client, sync_dialogs
-from .models import Escalation, Hotel, Rule, Staff, Task, Ticket, TicketStatus
+from .models import (
+    Diagnosis,
+    Escalation,
+    Hotel,
+    Rule,
+    Staff,
+    Task,
+    TaskType,
+    Ticket,
+    TicketStatus,
+)
 
 log = logging.getLogger("dovod.worker")
 
@@ -156,6 +167,46 @@ async def check_escalations() -> int:
     return fired
 
 
+async def auto_diagnose() -> int:
+    """Ставит диагноз обращениям типа «баг/проблема», у которых его ещё нет.
+
+    Разбирает только открытые обращения: диагноз закрытому уже никому не нужен.
+    За проход — не больше потолка из конфига: диагноз это вызов модели, и
+    непродиагностированный хвост спокойно уедет на следующий проход, а не
+    упрётся в лимит разом.
+    """
+    if not settings.auto_diagnose_enabled or not settings.anthropic_api_key:
+        return 0
+    async with SessionLocal() as s:
+        diagnosed = select(Diagnosis.ticket_id).where(Diagnosis.ticket_id.is_not(None))
+        refs = (
+            await s.execute(
+                select(Ticket.ref)
+                .where(
+                    Ticket.type.in_([TaskType.bug, TaskType.problem]),
+                    Ticket.status.notin_([TicketStatus.resolved, TicketStatus.closed]),
+                    Ticket.id.notin_(diagnosed),
+                )
+                .order_by(Ticket.created_at.desc())
+                .limit(settings.auto_diagnose_max_per_cycle)
+            )
+        ).scalars().all()
+
+    done = 0
+    for ref in refs:
+        # Своя сессия на обращение: run_diagnosis коммитит сам, и одна упавшая
+        # модель не должна откатывать уже поставленные диагнозы.
+        try:
+            async with SessionLocal() as s:
+                if await run_diagnosis(s, ref) is not None:
+                    done += 1
+        except Exception:
+            log.exception("авто-диагноз %s упал", ref)
+    if done:
+        log.info("авто-диагноз: поставлено %d", done)
+    return done
+
+
 async def cycle(client) -> None:
     if client is not None:
         try:
@@ -173,6 +224,10 @@ async def cycle(client) -> None:
             log.info("разбор: %s", stats)
     except Exception:
         log.exception("разбор упал")
+    try:
+        await auto_diagnose()
+    except Exception:
+        log.exception("авто-диагноз упал")
 
 
 async def main() -> None:

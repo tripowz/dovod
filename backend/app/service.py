@@ -420,13 +420,14 @@ class StaffMetrics:
         return round(self.spent_hours - self.estimate_hours, 1)
 
 
-def _task_reworks_in_period(task: Task, since: datetime) -> int:
-    """Сколько раз задачу возвращали в работу за период.
+def _task_reworks_in_period(task: Task, since: datetime, until: datetime) -> int:
+    """Сколько раз задачу возвращали в работу в окне [since, until).
 
     Возврат — это второй и последующий переход в «В работе»: первый запуск
     задачи нормален, а каждый следующий означает, что её уже сдавали и вернули.
-    Период применяется к самому возврату, а не к первому запуску: задача могла
-    стартовать месяц назад, а провалить приёмку на этой неделе.
+    Окно применяется к самому возврату, а не к первому запуску: задача могла
+    стартовать месяц назад, а провалить приёмку на этой неделе. Верхняя граница
+    `until` нужна, чтобы считать прошлый период, не захватывая текущий.
     """
     marker = _status_event_text(TaskStatus.in_progress)
     seen_work = False
@@ -434,7 +435,7 @@ def _task_reworks_in_period(task: Task, since: datetime) -> int:
     for ev in sorted(task.events, key=lambda e: e.created_at):
         if ev.pending or ev.text != marker:
             continue
-        if seen_work and ev.created_at >= since:
+        if seen_work and since <= ev.created_at < until:
             count += 1
         seen_work = True
     return count
@@ -446,13 +447,21 @@ def build_staff_report(
     tickets: list[Ticket],
     now: datetime,
     since: datetime,
+    until: datetime | None = None,
 ) -> list[StaffMetrics]:
-    """Собирает метрики по каждому активному сотруднику за период [since, now].
+    """Собирает метрики по каждому активному сотруднику за окно [since, until).
 
     Задача засчитывается тому, кто её вёл (assignee), а не тому, кто принял:
     приёмка — обязанность автора, а работу делал исполнитель, и спрашивать за
     неё надо с него.
+
+    `until` по умолчанию равен `now` — обычный отчёт «за последние N дней». Явная
+    верхняя граница нужна только для сравнения с прошлым периодом: иначе прошлое
+    окно захватило бы и текущее, и динамика всегда выглядела бы нулевой.
+    Мгновенные показатели (открыто/просрочено/на проверке) всегда считаются на
+    `now` и для прошлого окна не имеют смысла — их там не читают.
     """
+    end = until or now
     acc: dict[int, StaffMetrics] = {
         s.id: StaffMetrics(
             staff_id=s.id,
@@ -481,19 +490,19 @@ def build_staff_report(
                 m.overdue_now += 1
             if t.status == TaskStatus.review:
                 m.review_now += 1
-        elif t.status == TaskStatus.done and t.last_moved_at >= since:
+        elif t.status == TaskStatus.done and since <= t.last_moved_at < end:
             m.done += 1
             m.spent_hours += t.spent_hours or 0.0
             m.estimate_hours += t.estimate_hours or 0.0
-        m.reworks += _task_reworks_in_period(t, since)
+        m.reworks += _task_reworks_in_period(t, since, end)
 
     for tk in tickets:
         if tk.assignee_id not in acc:
             continue
         m = acc[tk.assignee_id]
-        if tk.resolved_at and tk.resolved_at >= since:
+        if tk.resolved_at and since <= tk.resolved_at < end:
             m.resolved_tickets += 1
-        if tk.first_reply_at and tk.first_reply_at >= since:
+        if tk.first_reply_at and since <= tk.first_reply_at < end:
             delta = int((tk.first_reply_at - tk.created_at).total_seconds() // 60)
             reply_minutes[tk.assignee_id].append(max(delta, 0))
 
@@ -507,27 +516,99 @@ def build_staff_report(
     )
 
 
-def staff_report_text(rows: list[StaffMetrics], days: int) -> str:
+@dataclass
+class StaffTrend:
+    """Метрики сотрудника с оглядкой на прошлый такой же период.
+
+    Снимок говорит, как сейчас; динамика — стало лучше или хуже. Для разговора
+    важнее второе: две просрочки, которых на прошлой неделе было пять, — это не
+    то же самое, что две после нуля. `prev` может быть None (сотрудник появился
+    недавно, сравнивать не с чем), и тогда дельты не показываются.
+    """
+
+    cur: StaffMetrics
+    prev: StaffMetrics | None = None
+
+    @property
+    def done_delta(self) -> int:
+        return self.cur.done - (self.prev.done if self.prev else 0)
+
+    @property
+    def resolved_delta(self) -> int:
+        return self.cur.resolved_tickets - (self.prev.resolved_tickets if self.prev else 0)
+
+    @property
+    def reworks_delta(self) -> int:
+        return self.cur.reworks - (self.prev.reworks if self.prev else 0)
+
+    @property
+    def reply_delta(self) -> int | None:
+        """Изменение времени ответа. None, если сравнивать не с чем: ноль здесь
+        соврал бы, что время не изменилось, хотя его просто не с чем сверить."""
+        if (
+            self.prev
+            and self.cur.avg_first_reply_min is not None
+            and self.prev.avg_first_reply_min is not None
+        ):
+            return self.cur.avg_first_reply_min - self.prev.avg_first_reply_min
+        return None
+
+
+def build_staff_report_trend(
+    staff_list: list[Staff],
+    tasks: list[Task],
+    tickets: list[Ticket],
+    now: datetime,
+    days: int,
+) -> list[StaffTrend]:
+    """Отчёт за последние `days` дней рядом с предыдущим таким же окном.
+
+    Предыдущее окно — [now-2·days, now-days): ровно той же длины и впритык, иначе
+    сравнение «за неделю» с «за три дня» давало бы ложную динамику.
+    """
+    since = now - timedelta(days=days)
+    prev_since = since - timedelta(days=days)
+    cur = build_staff_report(staff_list, tasks, tickets, now, since)
+    prev = {
+        m.staff_id: m
+        for m in build_staff_report(staff_list, tasks, tickets, now, prev_since, until=since)
+    }
+    return [StaffTrend(cur=c, prev=prev.get(c.staff_id)) for c in cur]
+
+
+def _arrow(delta: int) -> str:
+    """Направленная стрелка динамики для текста отчёта. Пусто, если без
+    изменений. Хорошо это или плохо, в сообщении не раскрашиваешь — цифра рядом
+    со стрелкой говорит сама."""
+    if delta == 0:
+        return ""
+    return (" ↑" if delta > 0 else " ↓") + f"{abs(delta)}"
+
+
+def staff_report_text(rows: list[StaffTrend], days: int) -> str:
     """Недельный отчёт одним сообщением в Telegram.
 
     Руководитель должен увидеть, с кем разговаривать, не открывая мини-апп:
     первым идёт тот, у кого возвраты и просрочки, а не тот, кто больше закрыл.
+    Рядом с возвратами — динамика к прошлой неделе: растут они или спадают,
+    важнее их сегодняшнего числа.
     """
     lines = [f"*Отчёт за {days} дн.*"]
     if not rows:
         lines.append("Сотрудников нет.")
         return "\n".join(lines)
-    for m in rows:
+    for tr in rows:
+        m = tr.cur
         reply = f"{m.avg_first_reply_min} мин" if m.avg_first_reply_min is not None else "—"
         tail = []
         if m.reworks:
-            tail.append(f"возвратов {m.reworks}")
+            tail.append(f"возвратов {m.reworks}{_arrow(tr.reworks_delta)}")
         if m.overdue_now:
             tail.append(f"просрочено {m.overdue_now}")
         extra = f" ({', '.join(tail)})" if tail else ""
         lines.append(
-            f"{m.name}: закрыто {m.done}, заявок {m.resolved_tickets}, "
-            f"ответ {reply}{extra}"
+            f"{m.name}: закрыто {m.done}{_arrow(tr.done_delta)}, "
+            f"заявок {m.resolved_tickets}, ответ {reply}{extra}"
         )
     return "\n".join(lines)
 

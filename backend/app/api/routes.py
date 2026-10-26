@@ -20,9 +20,11 @@ from .. import service
 from ..auth import current_manager, current_staff
 from ..config import settings
 from ..db import get_session
+from ..agents.diagnose import run_diagnosis
 from ..models import (
     Analysis,
     Chat,
+    Diagnosis,
     Hotel,
     Message,
     Module,
@@ -532,6 +534,21 @@ async def cancel_task(
 # --------------------------------------------------------------------------
 
 
+def _diagnosis_payload(d: Diagnosis | None) -> dict | None:
+    if d is None:
+        return None
+    return {
+        "summary": d.summary,
+        "probable_cause": d.probable_cause,
+        "suggested_step": d.suggested_step,
+        "related": d.related or [],
+        "suggested_module": d.suggested_module.value,
+        "suggested_assignee": d.suggested_assignee.name if d.suggested_assignee else None,
+        "confidence": round(d.confidence, 2),
+        "model": d.model,
+    }
+
+
 @router.get("/tickets")
 async def list_tickets(
     staff: Staff = Depends(current_staff),
@@ -546,6 +563,18 @@ async def list_tickets(
             .limit(50)
         )
     ).scalars().all()
+    # Диагнозы одним запросом: отдельная таблица без связи в модели Ticket,
+    # поэтому собираем по ticket_id, а не через relationship.
+    diag_by_ticket: dict[int, Diagnosis] = {}
+    if rows:
+        diag_rows = (
+            await session.execute(
+                select(Diagnosis)
+                .options(selectinload(Diagnosis.suggested_assignee))
+                .where(Diagnosis.ticket_id.in_([t.id for t in rows]))
+            )
+        ).scalars().all()
+        diag_by_ticket = {d.ticket_id: d for d in diag_rows if d.ticket_id is not None}
     out = []
     for t in rows:
         a = t.analysis
@@ -568,6 +597,7 @@ async def list_tickets(
                 "draft_reply": a.draft_reply, "actions": a.actions or [],
                 "used_for": a.used_for,
             },
+            "diagnosis": _diagnosis_payload(diag_by_ticket.get(t.id)),
         })
     return out
 
@@ -596,6 +626,32 @@ async def reply_ticket(
         t.analysis.used_for = "ответ отправлен"
     await session.commit()
     return {"ok": True, "message": f"{t.ref}: таймер первого ответа остановлен"}
+
+
+@router.post("/tickets/{ref}/diagnose")
+async def diagnose_ticket(
+    ref: str,
+    staff: Staff = Depends(current_staff),
+    session: AsyncSession = Depends(get_session),
+):
+    """Ставит обращению технический диагноз: причина, с чем связано, следующий шаг.
+
+    Агент предлагает, не действует: ничего не назначает и клиенту не пишет —
+    это подсказка техменеджеру, которую он принимает или правит сам.
+    """
+    exists = (
+        await session.execute(select(Ticket.id).where(Ticket.ref == ref))
+    ).scalar_one_or_none()
+    if exists is None:
+        raise HTTPException(404, "Заявка не найдена")
+    d = await run_diagnosis(session, ref)
+    if d is None:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "Диагноз сейчас не поставить — модель недоступна или не задан ключ. "
+            "Попробуйте позже.",
+        )
+    return {"ok": True, "ref": ref, "diagnosis": _diagnosis_payload(d)}
 
 
 @router.post("/tickets/{ref}/attach")
@@ -753,7 +809,14 @@ async def report_modules(
     return sorted(agg.values(), key=lambda x: -x["all"])
 
 
-def _staff_metrics_payload(m: service.StaffMetrics) -> dict:
+def _staff_metrics_payload(tr: service.StaffTrend) -> dict:
+    """Текущие метрики сотрудника плюс динамика к прошлому такому же периоду.
+
+    Дельты отдаём числами, а не «лучше/хуже»: что считать хорошим ростом,
+    зависит от показателя (закрыто — вверх хорошо, возвраты — вверх плохо), и
+    эту трактовку держит у себя экран, а не сервер.
+    """
+    m = tr.cur
     return {
         "staff_id": m.staff_id,
         "name": m.name,
@@ -768,17 +831,23 @@ def _staff_metrics_payload(m: service.StaffMetrics) -> dict:
         "spent_hours": round(m.spent_hours, 1),
         "estimate_hours": round(m.estimate_hours, 1),
         "estimate_gap_hours": m.estimate_gap_hours,
+        "trend": {
+            "done": tr.done_delta,
+            "resolved_tickets": tr.resolved_delta,
+            "reworks": tr.reworks_delta,
+            "avg_first_reply_min": tr.reply_delta,
+            "has_prev": tr.prev is not None,
+        },
     }
 
 
-async def _build_staff_report(session: AsyncSession, days: int) -> list[service.StaffMetrics]:
+async def _build_staff_trend(session: AsyncSession, days: int) -> list[service.StaffTrend]:
     """Общий сбор данных для метрик: задачи с историей, заявки, сотрудники.
 
     История задачи (`Task.events`) грузится сразу: возвраты на доработку
     считаются из неё, а до-загрузка по одной задаче превратила бы отчёт в
     сотни запросов.
     """
-    since = now() - timedelta(days=days)
     tasks = (
         await session.execute(
             select(Task).options(
@@ -790,8 +859,8 @@ async def _build_staff_report(session: AsyncSession, days: int) -> list[service.
     staff_rows = (
         await session.execute(select(Staff).where(Staff.active.is_(True)))
     ).scalars().all()
-    return service.build_staff_report(
-        list(staff_rows), list(tasks), list(tickets), now(), since
+    return service.build_staff_report_trend(
+        list(staff_rows), list(tasks), list(tickets), now(), days
     )
 
 
@@ -801,10 +870,10 @@ async def report_staff(
     staff: Staff = Depends(current_manager),
     session: AsyncSession = Depends(get_session),
 ):
-    """Метрики по каждому сотруднику за период. Только для руководителя."""
+    """Метрики по каждому сотруднику за период с динамикой. Только руководителю."""
     days = max(1, min(days, 90))
-    rows = await _build_staff_report(session, days)
-    return {"days": days, "staff": [_staff_metrics_payload(m) for m in rows]}
+    rows = await _build_staff_trend(session, days)
+    return {"days": days, "staff": [_staff_metrics_payload(tr) for tr in rows]}
 
 
 @router.get("/report/weekly")
@@ -813,10 +882,10 @@ async def report_weekly(
     session: AsyncSession = Depends(get_session),
 ):
     """Недельный отчёт: те же метрики плюс готовый текст для Telegram."""
-    rows = await _build_staff_report(session, 7)
+    rows = await _build_staff_trend(session, 7)
     return {
         "days": 7,
-        "staff": [_staff_metrics_payload(m) for m in rows],
+        "staff": [_staff_metrics_payload(tr) for tr in rows],
         "telegram_text": service.staff_report_text(rows, 7),
     }
 

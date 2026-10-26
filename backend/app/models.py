@@ -527,6 +527,52 @@ class Analysis(Base):
     ticket: Mapped[Ticket] = relationship(back_populates="analysis")
 
 
+class Diagnosis(Base):
+    """Технический разбор обращения для менеджера: причина и следующий шаг.
+
+    Отдельно от `Analysis`: тот обращён к клиенту (кто написал, тон, черновик
+    ответа), а это — к техменеджеру (с чем связано, вероятная причина, что
+    делать, кого привлечь). Смешать их в одной сущности — значит показывать
+    инженеру тон письма, а руководителю поддержки — гипотезу о коде.
+
+    Диагноз — гипотеза, а не приговор: `probable_cause` намеренно назван
+    «вероятной» причиной, а не «причиной». Агент предлагает, решает человек —
+    тот же инвариант, что и у предложений разбора. Поэтому диагноз ничего не
+    назначает и никому не пишет сам: `suggested_assignee_id` — это подсказка,
+    а не факт назначения.
+    """
+
+    __tablename__ = "diagnoses"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Диагноз ставится обращению (чаще) или задаче. Обе ссылки necessary nullable:
+    # обращение может ещё не стать задачей, а задачу могли завести без обращения.
+    ticket_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tickets.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+
+    summary: Mapped[str] = mapped_column(String(400), default="")  # суть одной строкой
+    probable_cause: Mapped[str] = mapped_column(Text, default="")  # гипотеза о причине
+    suggested_step: Mapped[str] = mapped_column(Text, default="")  # что делать дальше
+    # С чем связано: [{"ref": "SB-101", "why": "та же поломка синка Ostrovok"}].
+    # Факты (ссылки на реальные задачи) и объяснение модели в одном месте, но
+    # ref проверяется кодом — выдуманную задачу в список не пускаем.
+    related: Mapped[list | None] = mapped_column(JSON, default=list)
+    suggested_module: Mapped[Module] = mapped_column(_enum(Module), default=Module.unknown)
+    suggested_assignee_id: Mapped[int | None] = mapped_column(
+        ForeignKey("staff.id", ondelete="SET NULL"), nullable=True
+    )
+
+    confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    model: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    suggested_assignee: Mapped[Staff | None] = relationship()
+
+
 # --------------------------------------------------------------------------
 # Предложения модели
 # --------------------------------------------------------------------------

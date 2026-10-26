@@ -163,6 +163,17 @@ export interface DigestOut {
 /** Метрики одного сотрудника за период. Поля повторяют _staff_metrics_payload
  *  в routes.py: null в avg_first_reply_min значит «клиентам не отвечали», а не
  *  «отвечали мгновенно». */
+/** Динамика к прошлому такому же периоду. Дельты — числа; что считать хорошим
+ *  ростом, решает экран (закрыто вверх — хорошо, возвраты вверх — плохо).
+ *  avg_first_reply_min — null, когда сравнивать не с чем. */
+export interface StaffTrend {
+  done: number;
+  resolved_tickets: number;
+  reworks: number;
+  avg_first_reply_min: number | null;
+  has_prev: boolean;
+}
+
 export interface StaffMetric {
   staff_id: number;
   name: string;
@@ -177,6 +188,7 @@ export interface StaffMetric {
   spent_hours: number;
   estimate_hours: number;
   estimate_gap_hours: number;
+  trend: StaffTrend;
 }
 
 export interface StaffReportOut {

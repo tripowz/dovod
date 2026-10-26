@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import { api } from "../lib/tg";
 import type { StaffMetric, StaffReportOut } from "../lib/types";
 import { Card, Empty, SectionHead, plural } from "../components/ui";
@@ -30,11 +31,46 @@ function reply(min: number | null): string {
   return m ? `${h} ч ${m} мин` : `${h} ч`;
 }
 
-function Stat({ label, value, tone }: { label: string; value: string; tone?: "bad" }) {
+/**
+ * Стрелка динамики к прошлому периоду.
+ *
+ * Куда «хорошо» — зависит от показателя, и это знает вызывающий: для закрытых
+ * задач рост хорош, для возвратов и времени ответа хорош спад. Зелёного в
+ * палитре нет, поэтому хорошее — спокойным link-синим, тревожное — clay.
+ * Ничего не рисуем при нуле или когда сравнивать не с чем.
+ */
+function Delta({ value, goodWhenDown = false }: { value: number | null; goodWhenDown?: boolean }) {
+  if (value === null || value === 0) return null;
+  const down = value < 0;
+  const good = goodWhenDown ? down : !down;
+  return (
+    <span className={`ml-1 text-[10px] font-semibold ${good ? "text-link" : "text-clay"}`}>
+      {down ? "↓" : "↑"}
+      {Math.abs(value)}
+    </span>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  tone,
+  delta,
+}: {
+  label: string;
+  value: string;
+  tone?: "bad";
+  delta?: ReactNode;
+}) {
   return (
     <div>
-      <div className={`font-mono text-[17px] font-bold leading-none ${tone === "bad" ? "text-clay" : "text-ink"}`}>
-        {value}
+      <div className="flex items-baseline">
+        <span
+          className={`font-mono text-[17px] font-bold leading-none ${tone === "bad" ? "text-clay" : "text-ink"}`}
+        >
+          {value}
+        </span>
+        {delta}
       </div>
       <div className="mt-1 text-[10px] uppercase tracking-wide text-muted">{label}</div>
     </div>
@@ -43,6 +79,7 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: "ba
 
 function PersonCard({ m }: { m: StaffMetric }) {
   // Возвраты и просрочки — повод для разговора, поэтому красные, когда они есть.
+  const t = m.trend;
   const gap = m.estimate_gap_hours;
   const gapText =
     m.spent_hours === 0 && m.estimate_hours === 0
@@ -69,13 +106,22 @@ function PersonCard({ m }: { m: StaffMetric }) {
       </div>
 
       <div className="grid grid-cols-4 gap-2">
-        <Stat label="закрыто" value={String(m.done)} />
-        <Stat label="заявок" value={String(m.resolved_tickets)} />
-        <Stat label="ответ" value={reply(m.avg_first_reply_min)} />
+        <Stat label="закрыто" value={String(m.done)} delta={<Delta value={t.done} />} />
+        <Stat
+          label="заявок"
+          value={String(m.resolved_tickets)}
+          delta={<Delta value={t.resolved_tickets} />}
+        />
+        <Stat
+          label="ответ"
+          value={reply(m.avg_first_reply_min)}
+          delta={<Delta value={t.avg_first_reply_min} goodWhenDown />}
+        />
         <Stat
           label="возвраты"
           value={String(m.reworks)}
           tone={m.reworks > 0 ? "bad" : undefined}
+          delta={<Delta value={t.reworks} goodWhenDown />}
         />
       </div>
 
@@ -148,9 +194,11 @@ export default function StaffMetrics() {
       )}
 
       <p className="mb-4 mt-3 px-1 text-[11px] leading-snug text-muted">
-        Возврат на доработку — это задача, которую автор вернул с проверки:
-        самый честный признак того, что работа была сдана недоделанной. Считается
-        из истории задач, а не со слов исполнителя.
+        Стрелка — сравнение с предыдущим таким же периодом: синяя — движение в
+        хорошую сторону, красная — в плохую. Возврат на доработку — это задача,
+        которую автор вернул с проверки: самый честный признак того, что работа
+        была сдана недоделанной. Считается из истории задач, а не со слов
+        исполнителя.
       </p>
     </div>
   );

@@ -507,7 +507,12 @@ async def analyze_pending(session: AsyncSession, now: datetime | None = None) ->
     ).all()
 
     suffix = await feedback_examples(session)
-    run = AgentRun(agent="analyze", model=settings.model_analyze, started_at=now)
+    # Счётчики нулями явно: default=0 срабатывает только при вставке в БД, а до
+    # первого commit атрибут None — и += на нём падает.
+    run = AgentRun(
+        agent="analyze", model=settings.model_analyze, started_at=now,
+        input_tokens=0, output_tokens=0, cache_read_tokens=0, items_processed=0,
+    )
     session.add(run)
 
     by_chat: dict[int, list[Message]] = {}
