@@ -27,6 +27,7 @@ from ..config import settings
 from ..models import (
     AgentRun,
     Diagnosis,
+    DiagnosisVerdict,
     Hotel,
     Knowledge,
     Module,
@@ -162,13 +163,46 @@ def _clamp(x: object) -> float:
     return max(0.0, min(1.0, v))
 
 
-async def classify(payload: str) -> tuple[dict | None, dict, str]:
+async def feedback_examples(session: AsyncSession, limit: int = 10) -> str | None:
+    """Прошлые диагнозы, которые человек отметил как «мимо» — чему не повторять.
+
+    Именно это обещает кнопка «Мимо»: оценка учит агента, а не просто
+    закрывает карточку. Берём только `wrong` с пояснением, свежие вперёд.
+    """
+    rows = (
+        await session.execute(
+            select(Ticket.text, Diagnosis.summary, Diagnosis.verdict_note)
+            .join(Ticket, Ticket.id == Diagnosis.ticket_id)
+            .where(Diagnosis.verdict == DiagnosisVerdict.wrong)
+            .order_by(Diagnosis.verdict_at.desc())
+            .limit(limit)
+        )
+    ).all()
+    if not rows:
+        return None
+    lines = [
+        "Раньше по похожим обращениям человек отметил твой диагноз как ошибочный. "
+        "Учти это и не повторяй:"
+    ]
+    for text, summary, note in rows:
+        lines.append(
+            f"- обращение «{(text or '')[:200]}» → ты сказал «{(summary or '')[:200]}», "
+            f"но это мимо: {(note or '')[:300]}"
+        )
+    return "\n".join(lines)
+
+
+async def classify(payload: str, suffix: str | None = None) -> tuple[dict | None, dict, str]:
     """Один вызов модели на одно обращение.
 
     `None` вместо результата — «разобрать не удалось, повторить позже»: диагноз
     при этом не создаётся, а не пишется пустым.
     """
     system = [{"type": "text", "text": PROMPT, "cache_control": {"type": "ephemeral"}}]
+    if suffix:
+        # Примеры ошибок меняются от оценки к оценке, поэтому идут после точки
+        # кэша: новый пример не должен обнулять кэш стабильного промпта.
+        system.append({"type": "text", "text": suffix})
     resp = await _anthropic().beta.messages.create(
         model=settings.model_digest,
         max_tokens=4000,
@@ -256,13 +290,14 @@ async def run_diagnosis(session: AsyncSession, ticket_ref: str) -> Diagnosis | N
 
     # Счётчики заводим нулями явно: default=0 — это умолчание на вставку в БД,
     # а до неё атрибут None, и += на нём падает.
+    suffix = await feedback_examples(session)
     run = AgentRun(
         agent="diagnose", model=settings.model_digest, started_at=now,
         input_tokens=0, output_tokens=0, cache_read_tokens=0, items_processed=0,
     )
     session.add(run)
     try:
-        result, usage, model = await classify(payload)
+        result, usage, model = await classify(payload, suffix)
     except anthropic.APIError as exc:
         run.ok = False
         run.error = f"{type(exc).__name__}: {exc}"[:4000]

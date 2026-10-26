@@ -527,6 +527,12 @@ class Analysis(Base):
     ticket: Mapped[Ticket] = relationship(back_populates="analysis")
 
 
+class DiagnosisVerdict(str, enum.Enum):
+    pending = "pending"  # человек ещё не оценил диагноз
+    correct = "correct"  # диагноз верный
+    wrong = "wrong"  # диагноз мимо — с пояснением, как правильно
+
+
 class KnowledgeKind(str, enum.Enum):
     architecture = "architecture"  # как устроено, из чего состоит
     howto = "howto"  # как это работает/настраивается
@@ -606,6 +612,16 @@ class Diagnosis(Base):
     confidence: Mapped[float] = mapped_column(Float, default=0.5)
     model: Mapped[str] = mapped_column(String(64), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    # Оценка диагноза человеком. Это и мерило качества агента (доля верных), и
+    # обучающий сигнал: «мимо» с пояснением подмешивается в промпт как пример
+    # того, чего не повторять, — ровно как отказ учит разбор чатов.
+    verdict: Mapped[DiagnosisVerdict] = mapped_column(
+        _enum(DiagnosisVerdict), default=DiagnosisVerdict.pending, index=True
+    )
+    verdict_note: Mapped[str] = mapped_column(Text, default="")  # как было правильно
+    verdict_by: Mapped[str] = mapped_column(String(160), default="")
+    verdict_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     suggested_assignee: Mapped[Staff | None] = relationship()
 

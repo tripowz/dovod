@@ -25,6 +25,7 @@ from ..models import (
     Analysis,
     Chat,
     Diagnosis,
+    DiagnosisVerdict,
     Hotel,
     Message,
     Module,
@@ -130,6 +131,11 @@ class StatusIn(BaseModel):
 
 class ReworkIn(BaseModel):
     reason: str = Field(min_length=3, max_length=2000)
+
+
+class VerdictIn(BaseModel):
+    verdict: DiagnosisVerdict
+    note: str = Field(default="", max_length=2000)
 
 
 class TaskCreate(BaseModel):
@@ -573,6 +579,9 @@ def _diagnosis_payload(d: Diagnosis | None) -> dict | None:
         "suggested_assignee": d.suggested_assignee.name if d.suggested_assignee else None,
         "confidence": round(d.confidence, 2),
         "model": d.model,
+        "verdict": d.verdict.value,
+        "verdict_note": d.verdict_note,
+        "verdict_by": d.verdict_by,
     }
 
 
@@ -679,6 +688,76 @@ async def diagnose_ticket(
             "Попробуйте позже.",
         )
     return {"ok": True, "ref": ref, "diagnosis": _diagnosis_payload(d)}
+
+
+@router.post("/tickets/{ref}/diagnosis/verdict")
+async def diagnosis_verdict(
+    ref: str,
+    body: VerdictIn,
+    staff: Staff = Depends(current_staff),
+    session: AsyncSession = Depends(get_session),
+):
+    """Оценка диагноза человеком: «верный» или «мимо» с пояснением.
+
+    Это и мерило качества агента, и обучающий сигнал: «мимо» с пояснением
+    подмешивается в следующие разборы как пример того, чего не повторять.
+    """
+    if body.verdict == DiagnosisVerdict.pending:
+        raise HTTPException(422, "Вердикт должен быть «верный» или «мимо».")
+    if body.verdict == DiagnosisVerdict.wrong and not body.note.strip():
+        raise HTTPException(
+            422, "Для «мимо» нужно пояснение: что в диагнозе не так и как правильно."
+        )
+    t = (await session.execute(select(Ticket.id).where(Ticket.ref == ref))).scalar_one_or_none()
+    if t is None:
+        raise HTTPException(404, "Заявка не найдена")
+    d = (
+        await session.execute(select(Diagnosis).where(Diagnosis.ticket_id == t))
+    ).scalar_one_or_none()
+    if d is None:
+        raise HTTPException(404, "У заявки ещё нет диагноза")
+    d.verdict = body.verdict
+    d.verdict_note = body.note.strip()
+    d.verdict_by = staff.name
+    d.verdict_at = now()
+    await session.commit()
+    return {"ok": True, "verdict": d.verdict.value}
+
+
+@router.get("/report/agent")
+async def report_agent(
+    days: int = 30,
+    staff: Staff = Depends(current_manager),
+    session: AsyncSession = Depends(get_session),
+):
+    """Качество агента-диагноста за период: сколько оценили и доля верных.
+
+    Доля считается только от оценённых диагнозов: неоценённые — это не «плохо»,
+    а «ещё не проверили», и мешать их с ошибками значило бы занижать качество.
+    """
+    days = max(1, min(days, 365))
+    since = now() - timedelta(days=days)
+    rows = (
+        await session.execute(
+            select(Diagnosis.verdict, func.count(Diagnosis.id))
+            .where(Diagnosis.created_at >= since)
+            .group_by(Diagnosis.verdict)
+        )
+    ).all()
+    counts = {v.value: n for v, n in rows}
+    correct = counts.get("correct", 0)
+    wrong = counts.get("wrong", 0)
+    rated = correct + wrong
+    total = correct + wrong + counts.get("pending", 0)
+    return {
+        "days": days,
+        "total": total,
+        "rated": rated,
+        "correct": correct,
+        "wrong": wrong,
+        "pending": counts.get("pending", 0),
+        "accuracy": round(correct / rated, 2) if rated else None,
+    }
 
 
 @router.post("/tickets/{ref}/attach")

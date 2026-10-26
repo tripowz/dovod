@@ -21,6 +21,9 @@ export default function Tickets({
   // Какой тикет сейчас диагностируется: диагноз — вызов модели в несколько
   // секунд, и кнопку на это время надо заблокировать, иначе её нажмут дважды.
   const [busy, setBusy] = useState<string | null>(null);
+  // Для какого тикета открыто поле причины «мимо» и что в нём набрано.
+  const [wrongFor, setWrongFor] = useState<string | null>(null);
+  const [wrongNote, setWrongNote] = useState("");
   const load = () => api.get<TicketRow[]>("/tickets").then(setRows);
   useEffect(() => {
     void load();
@@ -56,6 +59,17 @@ export default function Tickets({
       } finally {
         setBusy(null);
       }
+    });
+
+  const verdict = (t: TicketRow, v: "correct" | "wrong", note = "") =>
+    guard(async () => {
+      await api.post(`/tickets/${t.ref}/diagnosis/verdict`, { verdict: v, note });
+      setWrongFor(null);
+      setWrongNote("");
+      await load();
+      return v === "correct"
+        ? `${t.ref}: диагноз отмечен верным`
+        : `${t.ref}: отмечено «мимо» — агент учтёт`;
     });
 
   return (
@@ -223,6 +237,74 @@ export default function Tickets({
                     {t.diagnosis.suggested_assignee && <span>· кому: {t.diagnosis.suggested_assignee}</span>}
                     <span className="ml-auto">гипотеза ИИ, ничего не назначено</span>
                   </div>
+
+                  {/* Оценка диагноза: мерило качества агента и обучающий сигнал. */}
+                  {t.diagnosis.verdict === "pending" ? (
+                    <div className="mt-2.5 border-t border-dashed border-ochre/40 pt-2.5">
+                      {wrongFor === t.ref ? (
+                        <div>
+                          <textarea
+                            value={wrongNote}
+                            onChange={(e) => setWrongNote(e.target.value)}
+                            rows={2}
+                            placeholder="Что в диагнозе не так и как правильно — агент это учтёт"
+                            className="w-full resize-none rounded-lg border border-black/10 bg-bg px-2.5 py-2 text-[12px] leading-snug outline-none"
+                          />
+                          <div className="mt-1.5 flex gap-1.5">
+                            <button
+                              disabled={wrongNote.trim().length < 3}
+                              onClick={() => void verdict(t, "wrong", wrongNote.trim())}
+                              className="rounded-lg bg-clay px-3 py-1.5 text-[12px] font-semibold text-white disabled:opacity-40"
+                            >
+                              Отправить
+                            </button>
+                            <button
+                              onClick={() => {
+                                setWrongFor(null);
+                                setWrongNote("");
+                              }}
+                              className="rounded-lg bg-surface px-3 py-1.5 text-[12px] font-semibold text-ink/70"
+                            >
+                              Отмена
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[11px] text-muted">Диагноз точный?</span>
+                          <button
+                            onClick={() => void verdict(t, "correct")}
+                            className="ml-auto rounded-lg bg-link/12 px-3 py-1.5 text-[12px] font-semibold text-link"
+                          >
+                            Верный
+                          </button>
+                          <button
+                            onClick={() => {
+                              setWrongFor(t.ref);
+                              setWrongNote("");
+                            }}
+                            className="rounded-lg bg-clay/12 px-3 py-1.5 text-[12px] font-semibold text-clay"
+                          >
+                            Мимо
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="mt-2.5 border-t border-dashed border-ochre/40 pt-2 text-[11px]">
+                      {t.diagnosis.verdict === "correct" ? (
+                        <span className="font-semibold text-link">
+                          ✓ отмечен верным{t.diagnosis.verdict_by && ` · ${t.diagnosis.verdict_by}`}
+                        </span>
+                      ) : (
+                        <span className="text-clay">
+                          <b className="font-semibold">✗ мимо</b>
+                          {t.diagnosis.verdict_by && ` · ${t.diagnosis.verdict_by}`}
+                          {t.diagnosis.verdict_note && `: ${t.diagnosis.verdict_note}`}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 

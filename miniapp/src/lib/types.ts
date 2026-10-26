@@ -104,6 +104,9 @@ export interface TicketDiagnosis {
   suggested_assignee: string | null;
   confidence: number;
   model: string;
+  verdict: "pending" | "correct" | "wrong";
+  verdict_note: string;
+  verdict_by: string;
 }
 
 export interface TicketRow {
