@@ -6,8 +6,13 @@ import Tasks from "./screens/Tasks";
 import Tickets from "./screens/Tickets";
 import Clients from "./screens/Clients";
 import Report from "./screens/Report";
+import StaffMetrics from "./screens/StaffMetrics";
 
 type Tab = "inbox" | "tasks" | "tickets" | "clients" | "report";
+// Внутри «Отчёта» две разные вещи: сводка — что горит сейчас, метрики — кто
+// как работал за период. Они не конкурируют за место в нижней навигации,
+// поэтому переключаются здесь, а не отдельной шестой вкладкой.
+type ReportView = "digest" | "staff";
 
 const TABS: { key: Tab; label: string; managerOnly?: boolean }[] = [
   { key: "inbox", label: "Входящие" },
@@ -31,6 +36,7 @@ export default function App() {
   // Руководителю приложение открывается на сводке: он заходит узнать, что
   // горит, а не разбирать входящие.
   const [tab, setTab] = useState<Tab>("inbox");
+  const [reportView, setReportView] = useState<ReportView>("digest");
   const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
@@ -109,7 +115,27 @@ export default function App() {
         {tab === "tasks" && <Tasks me={me} guard={guard} />}
         {tab === "tickets" && <Tickets guard={guard} />}
         {tab === "clients" && <Clients guard={guard} />}
-        {tab === "report" && <Report me={me} />}
+        {tab === "report" && (
+          <>
+            <div className="mb-3 flex gap-1 rounded-xl bg-surface p-1">
+              {([
+                ["digest", "Сводка"],
+                ["staff", "Метрики"],
+              ] as [ReportView, string][]).map(([key, label]) => (
+                <button
+                  key={key}
+                  onClick={() => setReportView(key)}
+                  className={`flex-1 rounded-lg px-3 py-1.5 text-[12px] font-semibold ${
+                    reportView === key ? "bg-bg text-ink shadow-sm" : "text-muted"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {reportView === "digest" ? <Report me={me} /> : <StaffMetrics />}
+          </>
+        )}
       </main>
 
       {toast && (

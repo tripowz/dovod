@@ -86,6 +86,11 @@ class Settings(BaseSettings):
     # --- сводка и эскалация ---
     digest_hour_local: int = 9
     timezone: str = "Asia/Tashkent"
+    # Недельный отчёт по сотрудникам. Понедельник утром намеренно: неделя
+    # закрыта, а разговор по её итогам есть с чего начать в тот же день.
+    # 0 — понедельник … 6 — воскресенье.
+    weekly_report_weekday: int = 0
+    weekly_report_hour_local: int = 9
     escalate_first_reply_minutes: int = 25
     escalate_idle_days: int = 5
     # Стоимость часа обслуживания. На ней держится вся экономика в карточке

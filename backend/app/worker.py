@@ -25,7 +25,7 @@ from sqlalchemy.orm import selectinload
 
 from . import service
 from .agents.analyze import OPEN_STATUSES, analyze_pending
-from .bot.telegram import BotError, send, send_morning_digest
+from .bot.telegram import BotError, send, send_morning_digest, send_weekly_report
 from .config import settings
 from .db import SessionLocal, init_db
 from .ingest.reader import fetch_new, make_client, sync_dialogs
@@ -210,6 +210,15 @@ async def main() -> None:
     )
     sched.add_job(check_escalations, "interval", minutes=5, max_instances=1, coalesce=True)
     sched.add_job(send_morning_digest, "cron", hour=settings.digest_hour_local, minute=0, max_instances=1)
+    # Недельный отчёт по сотрудникам: раз в неделю в заданный день и час.
+    sched.add_job(
+        send_weekly_report,
+        "cron",
+        day_of_week=settings.weekly_report_weekday,
+        hour=settings.weekly_report_hour_local,
+        minute=0,
+        max_instances=1,
+    )
     sched.start()
     log.info("воркер запущен")
     await asyncio.Event().wait()

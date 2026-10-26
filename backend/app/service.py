@@ -363,6 +363,176 @@ def digest_text(d: Digest) -> str:
 
 
 # --------------------------------------------------------------------------
+# Метрики по сотрудникам
+# --------------------------------------------------------------------------
+#
+# Утренняя сводка отвечает на вопрос «что горит сейчас». Метрики отвечают на
+# другой вопрос — «кто как работал за период», и смешивать их нельзя: по
+# мгновенной нагрузке нельзя спросить с человека, а по накопленным цифрам —
+# можно. Поэтому это отдельная функция, а не поле в `Digest`.
+#
+# Все показатели считаются из фактов, а не из оценок: приоритет и estimate
+# человек ставит сам, а время ответа, просрочки и возвраты на доработку
+# подделать нельзя — именно они и есть предмет разговора с сотрудником.
+
+
+#: Текст события смены статуса. Строится из тех же констант, что и в
+#: `change_status`, чтобы подсчёт возвратов не разошёлся с тем, что реально
+#: пишется в историю задачи.
+def _status_event_text(status: TaskStatus) -> str:
+    return f"Статус изменён на «{STATUS_TITLE[status]}»"
+
+
+@dataclass
+class StaffMetrics:
+    """Что сделал один сотрудник за период.
+
+    `reworks` — возвраты с «На проверке» обратно в работу. Это самый честный
+    индикатор качества: задача, которую автор вернул на доработку, была сдана
+    недоделанной. Он считается из истории, а не со слов исполнителя.
+
+    `avg_first_reply_min` равен None, а не нулю, когда клиентам за период не
+    отвечали вовсе: ноль читался бы как «отвечали мгновенно» и хвалил бы за
+    бездействие.
+    """
+
+    staff_id: int
+    name: str
+    done: int  # задач принято автором (status=done) за период
+    resolved_tickets: int  # заявок клиентов закрыто
+    avg_first_reply_min: int | None  # среднее время первого ответа клиенту
+    reworks: int  # возвраты на доработку
+    overdue_now: int  # открытых задач с прошедшим сроком прямо сейчас
+    open_now: int  # открытых задач сейчас
+    review_now: int  # сдано на приёмку, ждёт автора
+    spent_hours: float  # списано часов на закрытых за период задачах
+    estimate_hours: float  # оценка тех же задач
+
+    @property
+    def rework_rate(self) -> float:
+        """Доля возвратов среди доведённого. 0.3 — каждая третья возвращалась."""
+        base = self.done + self.reworks
+        return round(self.reworks / base, 2) if base else 0.0
+
+    @property
+    def estimate_gap_hours(self) -> float:
+        """Насколько факт разошёлся с оценкой. Плюс — работа дольше обещанного."""
+        return round(self.spent_hours - self.estimate_hours, 1)
+
+
+def _task_reworks_in_period(task: Task, since: datetime) -> int:
+    """Сколько раз задачу возвращали в работу за период.
+
+    Возврат — это второй и последующий переход в «В работе»: первый запуск
+    задачи нормален, а каждый следующий означает, что её уже сдавали и вернули.
+    Период применяется к самому возврату, а не к первому запуску: задача могла
+    стартовать месяц назад, а провалить приёмку на этой неделе.
+    """
+    marker = _status_event_text(TaskStatus.in_progress)
+    seen_work = False
+    count = 0
+    for ev in sorted(task.events, key=lambda e: e.created_at):
+        if ev.pending or ev.text != marker:
+            continue
+        if seen_work and ev.created_at >= since:
+            count += 1
+        seen_work = True
+    return count
+
+
+def build_staff_report(
+    staff_list: list[Staff],
+    tasks: list[Task],
+    tickets: list[Ticket],
+    now: datetime,
+    since: datetime,
+) -> list[StaffMetrics]:
+    """Собирает метрики по каждому активному сотруднику за период [since, now].
+
+    Задача засчитывается тому, кто её вёл (assignee), а не тому, кто принял:
+    приёмка — обязанность автора, а работу делал исполнитель, и спрашивать за
+    неё надо с него.
+    """
+    acc: dict[int, StaffMetrics] = {
+        s.id: StaffMetrics(
+            staff_id=s.id,
+            name=s.name,
+            done=0,
+            resolved_tickets=0,
+            avg_first_reply_min=None,
+            reworks=0,
+            overdue_now=0,
+            open_now=0,
+            review_now=0,
+            spent_hours=0.0,
+            estimate_hours=0.0,
+        )
+        for s in staff_list
+    }
+    reply_minutes: dict[int, list[int]] = {s.id: [] for s in staff_list}
+
+    for t in tasks:
+        if t.assignee_id not in acc:
+            continue
+        m = acc[t.assignee_id]
+        if t.is_open:
+            m.open_now += 1
+            if t.is_overdue(now):
+                m.overdue_now += 1
+            if t.status == TaskStatus.review:
+                m.review_now += 1
+        elif t.status == TaskStatus.done and t.last_moved_at >= since:
+            m.done += 1
+            m.spent_hours += t.spent_hours or 0.0
+            m.estimate_hours += t.estimate_hours or 0.0
+        m.reworks += _task_reworks_in_period(t, since)
+
+    for tk in tickets:
+        if tk.assignee_id not in acc:
+            continue
+        m = acc[tk.assignee_id]
+        if tk.resolved_at and tk.resolved_at >= since:
+            m.resolved_tickets += 1
+        if tk.first_reply_at and tk.first_reply_at >= since:
+            delta = int((tk.first_reply_at - tk.created_at).total_seconds() // 60)
+            reply_minutes[tk.assignee_id].append(max(delta, 0))
+
+    for sid, mins in reply_minutes.items():
+        if mins:
+            acc[sid].avg_first_reply_min = round(sum(mins) / len(mins))
+
+    # Вперёд те, с кем есть о чём говорить: возвраты, потом просрочки.
+    return sorted(
+        acc.values(), key=lambda m: (-m.reworks, -m.overdue_now, -m.done)
+    )
+
+
+def staff_report_text(rows: list[StaffMetrics], days: int) -> str:
+    """Недельный отчёт одним сообщением в Telegram.
+
+    Руководитель должен увидеть, с кем разговаривать, не открывая мини-апп:
+    первым идёт тот, у кого возвраты и просрочки, а не тот, кто больше закрыл.
+    """
+    lines = [f"*Отчёт за {days} дн.*"]
+    if not rows:
+        lines.append("Сотрудников нет.")
+        return "\n".join(lines)
+    for m in rows:
+        reply = f"{m.avg_first_reply_min} мин" if m.avg_first_reply_min is not None else "—"
+        tail = []
+        if m.reworks:
+            tail.append(f"возвратов {m.reworks}")
+        if m.overdue_now:
+            tail.append(f"просрочено {m.overdue_now}")
+        extra = f" ({', '.join(tail)})" if tail else ""
+        lines.append(
+            f"{m.name}: закрыто {m.done}, заявок {m.resolved_tickets}, "
+            f"ответ {reply}{extra}"
+        )
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
 # Осиротевшие предложения
 # --------------------------------------------------------------------------
 

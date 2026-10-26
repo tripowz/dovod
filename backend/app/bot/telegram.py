@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from sqlalchemy import select
@@ -87,6 +87,7 @@ async def setup() -> None:
         commands=[
             {"command": "start", "description": "Открыть Довод"},
             {"command": "digest", "description": "Сводка прямо сейчас"},
+            {"command": "report", "description": "Отчёт по сотрудникам за неделю"},
             {"command": "id", "description": "Мой Telegram ID"},
         ],
     )
@@ -116,6 +117,31 @@ async def compose_digest(staff: Staff) -> str:
         hotels = (await s.execute(select(Hotel))).scalars().all()
     d = service.build_digest(list(tasks), list(tickets), list(hotels), staff, _now())
     return service.digest_text(d).replace("*", "")
+
+
+async def compose_staff_report(days: int = 7) -> str:
+    """Текст недельного отчёта по сотрудникам для Telegram.
+
+    Грузит историю задач вместе с ними: возвраты на доработку считаются из неё,
+    и до-загрузка по одной задаче превратила бы отчёт в сотни запросов.
+    """
+    since = _now() - timedelta(days=days)
+    async with SessionLocal() as s:
+        tasks = (
+            await s.execute(
+                select(Task).options(
+                    selectinload(Task.assignee), selectinload(Task.events)
+                )
+            )
+        ).scalars().all()
+        tickets = (await s.execute(select(Ticket))).scalars().all()
+        staff_rows = (
+            await s.execute(select(Staff).where(Staff.active.is_(True)))
+        ).scalars().all()
+    rows = service.build_staff_report(
+        list(staff_rows), list(tasks), list(tickets), _now(), since
+    )
+    return service.staff_report_text(rows, days).replace("*", "")
 
 
 async def _staff_by_tg(tg_id: int) -> Staff | None:
@@ -162,6 +188,17 @@ async def handle_update(update: dict) -> None:
         await send(chat["id"], await compose_digest(staff), with_app=True)
         return
 
+    if text.startswith("/report"):
+        if not staff.is_manager:
+            await send(
+                chat["id"],
+                "Отчёт по команде доступен руководителю. Ваши задачи — в приложении.",
+                with_app=True,
+            )
+            return
+        await send(chat["id"], await compose_staff_report(), with_app=True)
+        return
+
     await send(
         chat["id"],
         f"{staff.name}, всё в приложении: входящие из чатов, задачи и заявки отелей.",
@@ -187,6 +224,33 @@ async def send_morning_digest() -> int:
             # боту начинать диалог первым. Лечится одним /start — и это должно
             # быть видно в логе, а не пропадать молча.
             log.warning("сводка для %s не ушла: %s", m.name, exc)
+    return sent
+
+
+async def send_weekly_report() -> int:
+    """Недельный отчёт по сотрудникам всем руководителям. Возвращает число доставленных.
+
+    Один и тот же текст на всех: отчёт о команде не зависит от того, кто из
+    руководителей его открыл, — в отличие от сводки, где «ждёт вашей приёмки»
+    считается на конкретного человека.
+    """
+    async with SessionLocal() as s:
+        managers = (
+            await s.execute(
+                select(Staff).where(Staff.is_manager.is_(True), Staff.active.is_(True))
+            )
+        ).scalars().all()
+    if not managers:
+        log.warning("недельный отчёт некому отправить — нет активных руководителей")
+        return 0
+    text = await compose_staff_report()
+    sent = 0
+    for m in managers:
+        try:
+            await send(m.tg_user_id, text, with_app=True)
+            sent += 1
+        except BotError as exc:
+            log.warning("отчёт для %s не ушёл: %s", m.name, exc)
     return sent
 
 

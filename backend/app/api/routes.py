@@ -753,6 +753,74 @@ async def report_modules(
     return sorted(agg.values(), key=lambda x: -x["all"])
 
 
+def _staff_metrics_payload(m: service.StaffMetrics) -> dict:
+    return {
+        "staff_id": m.staff_id,
+        "name": m.name,
+        "done": m.done,
+        "resolved_tickets": m.resolved_tickets,
+        "avg_first_reply_min": m.avg_first_reply_min,
+        "reworks": m.reworks,
+        "rework_rate": m.rework_rate,
+        "overdue_now": m.overdue_now,
+        "open_now": m.open_now,
+        "review_now": m.review_now,
+        "spent_hours": round(m.spent_hours, 1),
+        "estimate_hours": round(m.estimate_hours, 1),
+        "estimate_gap_hours": m.estimate_gap_hours,
+    }
+
+
+async def _build_staff_report(session: AsyncSession, days: int) -> list[service.StaffMetrics]:
+    """Общий сбор данных для метрик: задачи с историей, заявки, сотрудники.
+
+    История задачи (`Task.events`) грузится сразу: возвраты на доработку
+    считаются из неё, а до-загрузка по одной задаче превратила бы отчёт в
+    сотни запросов.
+    """
+    since = now() - timedelta(days=days)
+    tasks = (
+        await session.execute(
+            select(Task).options(
+                selectinload(Task.assignee), selectinload(Task.events)
+            )
+        )
+    ).scalars().all()
+    tickets = (await session.execute(select(Ticket))).scalars().all()
+    staff_rows = (
+        await session.execute(select(Staff).where(Staff.active.is_(True)))
+    ).scalars().all()
+    return service.build_staff_report(
+        list(staff_rows), list(tasks), list(tickets), now(), since
+    )
+
+
+@router.get("/report/staff")
+async def report_staff(
+    days: int = 7,
+    staff: Staff = Depends(current_manager),
+    session: AsyncSession = Depends(get_session),
+):
+    """Метрики по каждому сотруднику за период. Только для руководителя."""
+    days = max(1, min(days, 90))
+    rows = await _build_staff_report(session, days)
+    return {"days": days, "staff": [_staff_metrics_payload(m) for m in rows]}
+
+
+@router.get("/report/weekly")
+async def report_weekly(
+    staff: Staff = Depends(current_manager),
+    session: AsyncSession = Depends(get_session),
+):
+    """Недельный отчёт: те же метрики плюс готовый текст для Telegram."""
+    rows = await _build_staff_report(session, 7)
+    return {
+        "days": 7,
+        "staff": [_staff_metrics_payload(m) for m in rows],
+        "telegram_text": service.staff_report_text(rows, 7),
+    }
+
+
 # --------------------------------------------------------------------------
 # Сотрудники, применение предложений, удержание
 # --------------------------------------------------------------------------

@@ -159,3 +159,27 @@ export interface DigestOut {
   }[];
   telegram_text: string;
 }
+
+/** Метрики одного сотрудника за период. Поля повторяют _staff_metrics_payload
+ *  в routes.py: null в avg_first_reply_min значит «клиентам не отвечали», а не
+ *  «отвечали мгновенно». */
+export interface StaffMetric {
+  staff_id: number;
+  name: string;
+  done: number;
+  resolved_tickets: number;
+  avg_first_reply_min: number | null;
+  reworks: number;
+  rework_rate: number;
+  overdue_now: number;
+  open_now: number;
+  review_now: number;
+  spent_hours: number;
+  estimate_hours: number;
+  estimate_gap_hours: number;
+}
+
+export interface StaffReportOut {
+  days: number;
+  staff: StaffMetric[];
+}
