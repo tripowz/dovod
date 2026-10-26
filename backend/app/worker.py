@@ -31,9 +31,17 @@ from .config import settings
 from .db import SessionLocal, init_db
 from .ingest.reader import fetch_new, make_client, sync_dialogs
 from .models import (
+    Chat,
+    ChatKind,
     Diagnosis,
     Escalation,
     Hotel,
+    HotelContact,
+    Message,
+    Module,
+    Proposal,
+    ProposalKind,
+    ProposalState,
     Rule,
     Staff,
     Task,
@@ -167,6 +175,86 @@ async def check_escalations() -> int:
     return fired
 
 
+async def create_tickets_from_chat() -> int:
+    """Превращает запросы отелей из support-чатов в обращения (Ticket).
+
+    Источник — не отдельный разбор, а уже готовая разметка: сообщение из
+    support-чата, которое анализатор счёл новым запросом (`new_task`), и есть
+    обращение клиента. Берём только support-чаты: такой же `new_task` из
+    рабочей группы команды — это внутренняя задача, а не обращение, и SLA ему
+    не нужен.
+
+    Дедуп — по `message_id`: одно обращение на сообщение, повторный проход не
+    плодит заявки. `created_at` берём из времени сообщения, а не из «сейчас»:
+    клиент ждёт с момента, когда написал, и SLA обязан считаться оттуда, иначе
+    опоздание маскируется задержкой разбора.
+    """
+    if not settings.auto_ticket_enabled:
+        return 0
+    created = 0
+    async with SessionLocal() as s:
+        taken = select(Ticket.message_id).where(Ticket.message_id.is_not(None))
+        rows = (
+            await s.execute(
+                select(Message, Proposal)
+                .join(Chat, Chat.id == Message.chat_id)
+                .join(Proposal, Proposal.message_id == Message.id)
+                .where(
+                    Chat.kind == ChatKind.support,
+                    Chat.enabled.is_(True),
+                    Proposal.kind == ProposalKind.new_task,
+                    Proposal.state.in_([ProposalState.pending, ProposalState.applied]),
+                    Message.id.notin_(taken),
+                )
+                .order_by(Message.sent_at)
+                .limit(settings.auto_ticket_max_per_cycle)
+            )
+        ).all()
+        if not rows:
+            return 0
+
+        contacts = {
+            c.tg_user_id: c
+            for c in (
+                await s.execute(
+                    select(HotelContact).where(HotelContact.tg_user_id.is_not(None))
+                )
+            ).scalars()
+        }
+        base = (await s.execute(select(func.count(Ticket.id)))).scalar() or 0
+
+        for i, (m, p) in enumerate(rows, start=1):
+            draft = p.draft or {}
+            try:
+                typ = TaskType(draft.get("type") or "")
+            except ValueError:
+                typ = TaskType.question
+            try:
+                mod = Module(draft.get("module") or "")
+            except ValueError:
+                mod = Module.unknown
+            contact = contacts.get(m.tg_user_id)
+            s.add(
+                Ticket(
+                    ref=f"T-{100 + base + i}",
+                    hotel_id=contact.hotel_id if contact else None,
+                    message_id=m.id,
+                    author_name=m.author_name or (contact.name if contact else ""),
+                    author_role=contact.role if contact else "",
+                    text=m.text,
+                    type=typ,
+                    module=mod,
+                    status=TicketStatus.new,
+                    created_at=m.sent_at,
+                )
+            )
+            created += 1
+        await s.commit()
+    if created:
+        log.info("создано обращений из чата: %d", created)
+    return created
+
+
 async def auto_diagnose() -> int:
     """Ставит диагноз обращениям типа «баг/проблема», у которых его ещё нет.
 
@@ -224,6 +312,10 @@ async def cycle(client) -> None:
             log.info("разбор: %s", stats)
     except Exception:
         log.exception("разбор упал")
+    try:
+        await create_tickets_from_chat()
+    except Exception:
+        log.exception("создание обращений из чата упало")
     try:
         await auto_diagnose()
     except Exception:
