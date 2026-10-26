@@ -18,6 +18,9 @@ export default function Tickets({
   guard: (fn: () => Promise<string | void>) => Promise<void>;
 }) {
   const [rows, setRows] = useState<TicketRow[] | null>(null);
+  // Какой тикет сейчас диагностируется: диагноз — вызов модели в несколько
+  // секунд, и кнопку на это время надо заблокировать, иначе её нажмут дважды.
+  const [busy, setBusy] = useState<string | null>(null);
   const load = () => api.get<TicketRow[]>("/tickets").then(setRows);
   useEffect(() => {
     void load();
@@ -40,6 +43,19 @@ export default function Tickets({
       await api.post(`/tickets/${t.ref}/resolve`);
       await load();
       return `${t.ref} решена`;
+    });
+
+  const diagnose = (t: TicketRow) =>
+    guard(async () => {
+      haptic("medium");
+      setBusy(t.ref);
+      try {
+        await api.post(`/tickets/${t.ref}/diagnose`);
+        await load();
+        return `${t.ref}: диагноз готов`;
+      } finally {
+        setBusy(null);
+      }
     });
 
   return (
@@ -144,13 +160,86 @@ export default function Tickets({
                 </div>
               )}
 
+              {/* Технический диагноз для менеджера: причина, с чем связано и что
+                  делать. Отдельно от «Разбора ИИ» (тот обращён к клиенту) — и
+                  тоном другой: ochre, не link. */}
+              {t.diagnosis && (
+                <div className="mt-2.5 rounded-2xl border border-ochre/40 bg-ochre/8 p-3">
+                  <div className="mb-2 flex items-center gap-1.5">
+                    <b className="text-[12px] font-bold text-ochre">Диагноз · техменеджеру</b>
+                    <span className="ml-auto font-mono text-[10px] text-muted">
+                      уверенность {Math.round(t.diagnosis.confidence * 100)}%
+                    </span>
+                  </div>
+
+                  {t.diagnosis.summary && (
+                    <p className="m-0 text-[13px] font-semibold leading-snug">
+                      {t.diagnosis.summary}
+                    </p>
+                  )}
+
+                  {t.diagnosis.probable_cause && (
+                    <div className="mt-2">
+                      <span className="block text-[9.5px] font-bold uppercase tracking-wider text-ochre/90">
+                        Вероятная причина
+                      </span>
+                      <p className="m-0 mt-0.5 text-[12.5px] leading-snug">
+                        {t.diagnosis.probable_cause}
+                      </p>
+                    </div>
+                  )}
+
+                  {t.diagnosis.related.length > 0 && (
+                    <div className="mt-2">
+                      <span className="block text-[9.5px] font-bold uppercase tracking-wider text-ochre/90">
+                        С чем связано
+                      </span>
+                      <div className="mt-1 flex flex-col gap-1">
+                        {t.diagnosis.related.map((r) => (
+                          <div key={r.ref} className="flex items-start gap-1.5 text-[12px] leading-snug">
+                            <span className="shrink-0 rounded bg-bg px-1.5 py-0.5 font-mono text-[10.5px] font-bold">
+                              {r.ref}
+                            </span>
+                            <span className="text-ink/80">{r.why}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {t.diagnosis.suggested_step && (
+                    <div className="mt-2 rounded-xl bg-bg px-3 py-2.5">
+                      <span className="mb-0.5 block text-[10px] font-bold uppercase tracking-wider text-muted">
+                        Что делать
+                      </span>
+                      <p className="m-0 whitespace-pre-line text-[12.5px] leading-snug">
+                        {t.diagnosis.suggested_step}
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-dashed border-ochre/40 pt-2 text-[10.5px] text-ink/70">
+                    <span>модуль {t.diagnosis.suggested_module}</span>
+                    {t.diagnosis.suggested_assignee && <span>· кому: {t.diagnosis.suggested_assignee}</span>}
+                    <span className="ml-auto">гипотеза ИИ, ничего не назначено</span>
+                  </div>
+                </div>
+              )}
+
               {t.status !== "resolved" && t.status !== "closed" && (
-                <div className="mt-3 flex gap-1.5">
+                <div className="mt-3 flex flex-wrap gap-1.5">
                   {t.awaiting_reply && (
                     <Button className="flex-1" onClick={() => void reply(t)}>
                       Ответить в Telegram
                     </Button>
                   )}
+                  <Button
+                    variant="ghost"
+                    disabled={busy === t.ref}
+                    onClick={() => void diagnose(t)}
+                  >
+                    {busy === t.ref ? "Думаю…" : t.diagnosis ? "Обновить" : "Диагноз"}
+                  </Button>
                   <Button variant="ghost" onClick={() => void resolve(t)}>
                     Решена
                   </Button>

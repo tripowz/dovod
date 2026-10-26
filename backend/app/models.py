@@ -527,6 +527,43 @@ class Analysis(Base):
     ticket: Mapped[Ticket] = relationship(back_populates="analysis")
 
 
+class KnowledgeKind(str, enum.Enum):
+    architecture = "architecture"  # как устроено, из чего состоит
+    howto = "howto"  # как это работает/настраивается
+    known_issue = "known_issue"  # типичная поломка и куда смотреть
+    solution = "solution"  # что реально помогло в прошлом
+
+
+class Knowledge(Base):
+    """База знаний о системе — то, по чему агент понимает «что да как».
+
+    Заполняется из репозиториев SmartBooking: что за модуль, где живёт, как
+    работает, где типичные точки отказа. Источник правды — markdown-файлы в
+    `app/knowledge/` (под гитом, их видно и правит человек), а эта таблица —
+    их загруженная копия для выдачи агенту. Поэтому `slug` стабильный: загрузчик
+    переписывает запись на месте, а не плодит дубли при каждом прогоне.
+
+    Разнесение по `module` — не каталогизация ради каталогизации: диагност
+    тянет в промпт знания ровно по модулю обращения, а не всю базу, иначе она
+    не влезет и утопит нужное в постороннем.
+    """
+
+    __tablename__ = "knowledge"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    slug: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    module: Mapped[Module] = mapped_column(_enum(Module), default=Module.unknown, index=True)
+    kind: Mapped[KnowledgeKind] = mapped_column(_enum(KnowledgeKind), default=KnowledgeKind.architecture)
+    title: Mapped[str] = mapped_column(String(300))
+    content: Mapped[str] = mapped_column(Text)
+    # Откуда факт: репозитории и ключевые файлы. Чтобы знание можно было
+    # перепроверить по коду, а не верить ему на слово.
+    source: Mapped[str] = mapped_column(String(500), default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
 class Diagnosis(Base):
     """Технический разбор обращения для менеджера: причина и следующий шаг.
 

@@ -28,6 +28,7 @@ from ..models import (
     AgentRun,
     Diagnosis,
     Hotel,
+    Knowledge,
     Module,
     Staff,
     Task,
@@ -84,13 +85,15 @@ def build_input(
     open_tasks: list[Task],
     recent_done: list[Task],
     team: list[Staff],
+    knowledge: list[Knowledge],
     now: datetime,
 ) -> str:
-    """Вход модели: обращение плюс контекст, по которому ищется связь.
+    """Вход модели: обращение, база знаний по модулю и контекст для связей.
 
     Закрытые задачи даются наравне с открытыми намеренно: в уже решённой
     задаче часто лежит готовое лечение той же поломки, и диагноз «это дубль
-    SB-98, прикрепить» ценнее нового расследования.
+    SB-98, прикрепить» ценнее нового расследования. База знаний — то, по чему
+    модель понимает устройство системы, а не угадывает его.
     """
 
     def task_brief(t: Task) -> dict:
@@ -106,6 +109,16 @@ def build_input(
 
     payload = {
         "now_utc": now.strftime("%Y-%m-%dT%H:%M"),
+        "knowledge_base": [
+            {
+                "module": k.module.value,
+                "kind": k.kind.value,
+                "title": k.title,
+                "source": k.source,
+                "text": k.content[:1800],
+            }
+            for k in knowledge
+        ],
         "ticket": {
             "ref": ticket.ref,
             "text": (ticket.text or "")[:MAX_TEXT_CHARS],
@@ -226,9 +239,19 @@ async def run_diagnosis(session: AsyncSession, ticket_ref: str) -> Diagnosis | N
     team = (
         await session.execute(select(Staff).where(Staff.active.is_(True)))
     ).scalars().all()
+    # База знаний по модулю обращения плюс общесистемная (UNKNOWN): известные
+    # поломки — вперёд, они полезнее архитектурного обзора при живом баге.
+    knowledge = (
+        await session.execute(
+            select(Knowledge)
+            .where(Knowledge.module.in_([ticket.module, Module.unknown]))
+            .order_by(Knowledge.kind, Knowledge.slug)
+        )
+    ).scalars().all()
 
     payload = build_input(
-        ticket, ticket.hotel, list(open_tasks), list(recent_done), list(team), now
+        ticket, ticket.hotel, list(open_tasks), list(recent_done),
+        list(team), list(knowledge), now,
     )
 
     # Счётчики заводим нулями явно: default=0 — это умолчание на вставку в БД,

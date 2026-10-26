@@ -93,6 +93,19 @@ export interface Analysis {
   used_for: string;
 }
 
+/** Технический диагноз обращения для техменеджера (агент-диагност).
+ *  related — ссылки на реальные задачи, уже проверенные бэкендом. */
+export interface TicketDiagnosis {
+  summary: string;
+  probable_cause: string;
+  suggested_step: string;
+  related: { ref: string; why: string }[];
+  suggested_module: string;
+  suggested_assignee: string | null;
+  confidence: number;
+  model: string;
+}
+
 export interface TicketRow {
   ref: string;
   hotel: string;
@@ -107,6 +120,7 @@ export interface TicketRow {
   awaiting_reply: boolean;
   task_ref: string | null;
   analysis: Analysis | null;
+  diagnosis: TicketDiagnosis | null;
 }
 
 export interface HotelRow {

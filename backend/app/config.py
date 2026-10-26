@@ -59,8 +59,11 @@ class Settings(BaseSettings):
 
     # --- Anthropic ---
     anthropic_api_key: str = ""
-    model_analyze: str = "claude-opus-5"
-    model_digest: str = "claude-opus-5"
+    # Средняя модель по умолчанию — Sonnet (между Haiku и Opus). Глубину даёт
+    # не столько модель, сколько effort и база знаний; Sonnet на разборе и
+    # диагнозе дешевле Opus при сопоставимом качестве на этих задачах.
+    model_analyze: str = "claude-sonnet-5-5"
+    model_digest: str = "claude-sonnet-5-5"
     # Разбор — массовая классификация, глубина не нужна и стоит денег.
     effort_analyze: str = "low"
     effort_digest: str = "medium"
