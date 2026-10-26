@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import anthropic
@@ -448,7 +448,13 @@ async def analyze_pending(session: AsyncSession, now: datetime | None = None) ->
             .join(Chat)
             .options(selectinload(Message.chat))
             .where(Message.analyzed_at.is_(None), Chat.enabled.is_(True))
-            .order_by(Message.sent_at)
+            # Свежее — вперёд: догруженная история не должна держать в
+            # очереди сегодняшние обращения. Внутри каждой части — по времени,
+            # чтобы продолжения шли после своих задач.
+            .order_by(
+                (Message.sent_at < now - timedelta(hours=settings.fresh_hours)).asc(),
+                Message.sent_at,
+            )
             .limit(settings.analyze_batch_size * 10)
         )
     ).scalars().all()

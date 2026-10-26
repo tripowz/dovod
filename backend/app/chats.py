@@ -9,6 +9,7 @@
     python -m app.chats on all --private --consent "служебный аккаунт, рабочая переписка"
                                                          — включить и личные
     python -m app.chats off all                          — выключить все
+    python -m app.chats history 30                       — догрузить последние 30 дней
 
 Массовое включение по умолчанию читает чаты с текущего момента: история
 сотен чатов разом встала бы в очередь разбора перед свежими обращениями
@@ -65,6 +66,8 @@ async def main(argv: list[str]) -> int:
             )
             return 0
 
+        if argv[0] == "history":
+            return await history(s, argv[1:])
         if argv[0] not in ("on", "off") or len(argv) < 2:
             print(__doc__)
             return 2
@@ -171,6 +174,48 @@ async def bulk(s, on: bool, history: bool, private: bool = False, consent: str =
             "или по одной: python -m app.chats on <№> --consent \"Имя, письменно, дата\""
         )
     print("Воркер подхватит изменения на следующем проходе (раз в 15 минут).")
+    return 0
+
+
+async def history(s, args: list[str]) -> int:
+    try:
+        days = int(args[0]) if args else 30
+    except ValueError:
+        print(f"Число дней — число, а не «{args[0]}». Например: python -m app.chats history 30")
+        return 2
+    if not 1 <= days <= 90:
+        print("Период — от 1 до 90 дней.")
+        return 2
+
+    from .ingest.reader import fetch_history, make_client
+
+    client = make_client()
+    # Сотни чатов подряд — Telegram может попросить подождать. Ждём сами,
+    # а не падаем на середине.
+    client.flood_sleep_threshold = 300
+    print(
+        f"Загружаю историю за {days} дн. из включённых чатов. Воркер должен быть "
+        "остановлен: одну сессию нельзя открыть дважды."
+    )
+    await client.start(phone=settings.telegram_phone or None)
+    try:
+        read, stored = await fetch_history(client, s, days)
+    finally:
+        await client.disconnect()
+
+    batches = -(-stored // settings.analyze_batch_size)
+    per_cycle = settings.analyze_batch_size * 10
+    hours = stored / per_cycle * settings.analyze_interval_minutes / 60
+    print(f"\nЧатов с сообщениями за период: {read}. Загружено сообщений: {stored}.")
+    print(
+        f"Разбор: до ~{batches} вызовов модели (часть отсеет фильтр), "
+        f"около {hours:.0f} ч при {per_cycle} сообщениях за проход."
+    )
+    print(
+        f"Свежие сообщения разбираются вперёд истории. Из сообщений старше "
+        f"{settings.fresh_hours} ч заявки с SLA не создаются."
+    )
+    print("Теперь запустите воркер: python -m app.worker")
     return 0
 
 

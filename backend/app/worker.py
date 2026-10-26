@@ -208,6 +208,9 @@ async def create_tickets_from_chat() -> int:
                     Proposal.kind == ProposalKind.new_task,
                     Proposal.state.in_([ProposalState.pending, ProposalState.applied]),
                     Message.id.notin_(taken),
+                    Message.sent_at
+                    >= datetime.now(timezone.utc).replace(tzinfo=None)
+                    - timedelta(hours=settings.fresh_hours),
                 )
                 .order_by(Message.sent_at)
                 .limit(settings.auto_ticket_max_per_cycle)

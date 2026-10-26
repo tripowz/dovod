@@ -11,7 +11,7 @@ import asyncio
 import os
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,8 +25,13 @@ from sqlalchemy import select  # noqa: E402
 
 from app import chats  # noqa: E402
 from app.db import SessionLocal, init_db  # noqa: E402
-from app.ingest.reader import fetch_new  # noqa: E402
-from app.models import FROM_NOW, TELEGRAM_SERVICE_ID, Chat, ChatKind, Message  # noqa: E402
+from app.agents.analyze import analyze_pending  # noqa: E402
+from app.config import settings  # noqa: E402
+from app.ingest.reader import fetch_history, fetch_new  # noqa: E402
+from app.models import (  # noqa: E402
+    FROM_NOW, TELEGRAM_SERVICE_ID, Chat, ChatKind, Message, Proposal, ProposalKind, Ticket,
+)
+from app.worker import create_tickets_from_chat  # noqa: E402
 
 passed = failed = 0
 
@@ -148,6 +153,101 @@ async def main() -> None:
     async with SessionLocal() as s:
         c6 = await s.get(Chat, 6)
     check("и по одному тоже не включается", code == 1 and not c6.enabled)
+
+    print()
+    print("=" * 62)
+    print("ИСТОРИЯ ЗА ПЕРИОД")
+    print("=" * 62)
+    now = datetime.now(timezone.utc)
+
+    class HistoryClient:
+        """Чат -201: сообщения 1–3 дня назад и одно 40 дней назад. Чат -202 молчит."""
+
+        def __init__(self):
+            self.history_calls: list[int] = []
+            self.msgs = {
+                -201: [(30, now - timedelta(days=1)), (20, now - timedelta(days=3)),
+                       (10, now - timedelta(days=40))],
+                -202: [(5, now - timedelta(days=60))],
+            }
+
+        async def iter_dialogs(self):
+            for cid, ms in self.msgs.items():
+                yield SimpleNamespace(id=cid, date=ms[0][1], message=SimpleNamespace(id=ms[0][0]))
+
+        async def iter_messages(self, chat_id, limit=2000):
+            self.history_calls.append(chat_id)
+            for i, d in self.msgs[chat_id]:
+                yield SimpleNamespace(
+                    id=i, action=None, message=f"история {i}", media=None, sender=None,
+                    sender_id=1, reply_to_msg_id=None, date=d,
+                )
+
+    async with SessionLocal() as s:
+        s.add_all([
+            Chat(id=21, tg_chat_id=-201, title="Отель", kind=ChatKind.support, enabled=True,
+                 last_seen_msg_id=FROM_NOW),
+            Chat(id=22, tg_chat_id=-202, title="Молчит", kind=ChatKind.team, enabled=True),
+        ])
+        await s.commit()
+    hc = HistoryClient()
+    async with SessionLocal() as s:
+        read, stored = await fetch_history(hc, s, days=30)
+        texts = sorted(
+            (await s.execute(select(Message.text).where(Message.chat_id == 21))).scalars()
+        )
+        c21 = await s.get(Chat, 21)
+    check("загружены сообщения только за период", texts == ["история 20", "история 30"], f"{texts}")
+    check("молчащий чат не запрашивается", hc.history_calls == [-201], f"{hc.history_calls}")
+    check("курсор чата «с текущего момента» встал на последнее", c21.last_seen_msg_id == 30)
+    async with SessionLocal() as s:
+        _, again = await fetch_history(hc, s, days=30)
+    check("повторная загрузка не дублирует", again == 0, f"{again}")
+
+    print()
+    print("=" * 62)
+    print("СВЕЖЕЕ ВПЕРЁД ИСТОРИИ, ЗАЯВКИ ТОЛЬКО ИЗ СВЕЖЕГО")
+    print("=" * 62)
+    naive = now.replace(tzinfo=None)
+    async with SessionLocal() as s:
+        old = [
+            Message(chat_id=21, tg_msg_id=100 + i, text="ок", sent_at=naive - timedelta(days=5, minutes=i))
+            for i in range(12)
+        ]
+        fresh = Message(chat_id=21, tg_msg_id=200, text="ок", sent_at=naive - timedelta(minutes=5))
+        s.add_all(old + [fresh])
+        await s.commit()
+        fresh_id = fresh.id
+    saved = settings.analyze_batch_size
+    settings.analyze_batch_size = 1  # за проход — 10 сообщений, меньше, чем ждёт
+    try:
+        async with SessionLocal() as s:
+            await s.execute(Message.__table__.update().where(Message.chat_id == 21, Message.tg_msg_id < 100).values(analyzed_at=naive))
+            await s.commit()
+            await analyze_pending(s)
+            f = await s.get(Message, fresh_id)
+        check("свежее разобрано при очереди из истории", f.analyzed_at is not None)
+    finally:
+        settings.analyze_batch_size = saved
+
+    async with SessionLocal() as s:
+        m_old = Message(chat_id=21, tg_msg_id=300, text="бронь не пришла", sent_at=naive - timedelta(days=3))
+        m_new = Message(chat_id=21, tg_msg_id=301, text="бронь не пришла", sent_at=naive - timedelta(minutes=3))
+        s.add_all([m_old, m_new])
+        await s.flush()
+        s.add_all([
+            Proposal(message_id=m_old.id, kind=ProposalKind.new_task, confidence=0.9,
+                     draft={"title": "Бронь", "type": "bug", "module": "CM"}),
+            Proposal(message_id=m_new.id, kind=ProposalKind.new_task, confidence=0.9,
+                     draft={"title": "Бронь", "type": "bug", "module": "CM"}),
+        ])
+        await s.commit()
+        old_id, new_id = m_old.id, m_new.id
+    await create_tickets_from_chat()
+    async with SessionLocal() as s:
+        from_msgs = set((await s.execute(select(Ticket.message_id))).scalars())
+    check("из старого сообщения заявка не создана", old_id not in from_msgs)
+    check("из свежего — создана", new_id in from_msgs, f"{from_msgs}")
 
     print()
     print("=" * 62)

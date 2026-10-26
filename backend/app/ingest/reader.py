@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -117,6 +117,24 @@ async def sync_dialogs(
     return added, tops
 
 
+def _to_row(chat: Chat, m) -> Message | None:
+    """Сообщение Telegram → строка базы. None — сохранять нечего."""
+    text = m.message or ""
+    media = type(m.media).__name__ if m.media else None
+    if not text and not media:
+        return None
+    return Message(
+        chat_id=chat.id,
+        tg_msg_id=m.id,
+        tg_user_id=m.sender_id,
+        author_name=_author(m),
+        text=text,
+        reply_to_msg_id=m.reply_to_msg_id,
+        media_kind=media,
+        sent_at=m.date.astimezone(timezone.utc).replace(tzinfo=None),
+    )
+
+
 def _author(m) -> str | None:
     s = m.sender
     if s is None:
@@ -175,22 +193,10 @@ async def fetch_new(
                 top = max(top, m.id)
                 if m.action is not None or m.id in existing:
                     continue  # служебные: «вступил в группу», «закрепил»
-                text = m.message or ""
-                media = type(m.media).__name__ if m.media else None
-                if not text and not media:
+                row = _to_row(chat, m)
+                if row is None:
                     continue
-                session.add(
-                    Message(
-                        chat_id=chat.id,
-                        tg_msg_id=m.id,
-                        tg_user_id=m.sender_id,
-                        author_name=_author(m),
-                        text=text,
-                        reply_to_msg_id=m.reply_to_msg_id,
-                        media_kind=media,
-                        sent_at=m.date.astimezone(timezone.utc).replace(tzinfo=None),
-                    )
-                )
+                session.add(row)
                 stored += 1
         except Exception as exc:
             # Один недоступный чат (вышли из группы, отобрали права) не должен
@@ -201,3 +207,64 @@ async def fetch_new(
         chat.last_seen_msg_id = top
         await session.commit()
     return stored
+
+
+async def fetch_history(
+    client: TelegramClient, session: AsyncSession, days: int, per_chat_limit: int = 2000
+) -> tuple[int, int]:
+    """Догружает в базу сообщения включённых чатов за последние `days` дней.
+
+    Курсор чтения (`last_seen_msg_id`) не сдвигается назад: воркер продолжит
+    с того же места, а уже сохранённые сообщения не дублируются. Чаты без
+    сообщений за период пропускаются по дате последнего сообщения из списка
+    диалогов — без запроса истории. Возвращает (чатов прочитано, сообщений).
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    chats = {
+        c.tg_chat_id: c
+        for c in (
+            await session.execute(select(Chat).where(Chat.enabled.is_(True)))
+        ).scalars()
+        if c.tg_chat_id != TELEGRAM_SERVICE_ID
+    }
+    active: list[tuple[Chat, int]] = []
+    async for d in client.iter_dialogs():
+        chat = chats.get(d.id)
+        if chat is None or d.message is None or d.date is None or d.date < since:
+            continue
+        active.append((chat, d.message.id))
+
+    read = stored = 0
+    for chat, top in active:
+        have = set(
+            (
+                await session.execute(
+                    select(Message.tg_msg_id).where(Message.chat_id == chat.id)
+                )
+            ).scalars()
+        )
+        added = 0
+        try:
+            async for m in client.iter_messages(chat.tg_chat_id, limit=per_chat_limit):
+                if m.date < since:
+                    break
+                if m.action is not None or m.id in have:
+                    continue
+                row = _to_row(chat, m)
+                if row is None:
+                    continue
+                session.add(row)
+                added += 1
+        except Exception as exc:
+            log.warning("история чата «%s» не прочитана: %s", chat.title, exc)
+            await session.rollback()
+            continue
+        # Чат, включённый «с текущего момента», ещё не знает своего места:
+        # без этого воркер на следующем проходе пропустил бы всё до `top`.
+        if chat.last_seen_msg_id == FROM_NOW:
+            chat.last_seen_msg_id = top
+        await session.commit()
+        read += 1
+        stored += added
+        log.info("история: «%s» +%d", chat.title, added)
+    return read, stored
