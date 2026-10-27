@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import shutil
 import sys
@@ -105,13 +106,33 @@ async def preflight() -> bool:
     return not fatal
 
 
+def find_cloudflared() -> str | None:
+    """cloudflared в PATH или в стандартных папках установки.
+
+    После `winget install` PATH обновляется только в новом окне терминала —
+    в старом программа есть, а `which` её не видит.
+    """
+    if exe := shutil.which("cloudflared"):
+        return exe
+    for base in (
+        os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+        os.environ.get("ProgramFiles", r"C:\Program Files"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Microsoft", "WinGet", "Links"),
+    ):
+        p = Path(base) / "cloudflared" / "cloudflared.exe"
+        for cand in (p, Path(base) / "cloudflared.exe"):
+            if cand.is_file():
+                return str(cand)
+    return None
+
+
 async def start_tunnel() -> asyncio.subprocess.Process | None:
     """Поднимает cloudflared и подставляет его адрес в settings.miniapp_url."""
     fixed = settings.miniapp_url.startswith("https://") and "trycloudflare.com" not in settings.miniapp_url
     if fixed:
         line(True, f"адрес мини-аппа: {settings.miniapp_url}")
         return None
-    exe = shutil.which("cloudflared")
+    exe = find_cloudflared()
     if exe is None:
         line(
             None,
