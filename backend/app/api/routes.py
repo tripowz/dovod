@@ -1483,6 +1483,9 @@ async def chats_full(
         # Можно ли обновить и загрузить историю прямо с сайта: только когда
         # Telethon подключён в этом же процессе (python -m app.run).
         "live": "client" in worker.LIVE,
+        # webhook — сообщения присылает Telegram (Vercel), telethon — читает
+        # Telethon в этом процессе, none — чтение работает где-то ещё.
+        "mode": "telethon" if "client" in worker.LIVE else ("webhook" if _webhook_mode() else "none"),
         "syncing": worker.BUSY.get("sync", False),
         "history": worker.BUSY.get("history", ""),
         "history_done": worker.BUSY.get("history_done", ""),
@@ -1582,12 +1585,35 @@ def _live_client():
     return client
 
 
+def _webhook_mode() -> bool:
+    import os
+
+    return bool(os.environ.get("VERCEL") or settings.cron_secret)
+
+
 @router.post("/sync")
 async def sync_now(staff: Staff = Depends(current_manager)):
     """Забрать новые сообщения и разобрать их сейчас, не дожидаясь расписания."""
     import asyncio
 
     from .. import worker
+
+    if "client" not in worker.LIVE and _webhook_mode():
+        # Сообщения уже в базе — их прислал Telegram. Остаётся прогнать
+        # агентов, и прямо в запросе: фоновая задача на Vercel умирает вместе
+        # с ответом.
+        from ..db import SessionLocal
+        from ..ingest import webhook
+
+        async with SessionLocal() as s:
+            owner = await webhook.owner_id(s)
+        out = await worker.run_agents(owner, budget_s=min(settings.tick_budget_seconds, 60))
+        a = out.get("analyze") or {}
+        return {
+            "ok": True,
+            "message": f"Разобрано сообщений: {a.get('messages', 0)}, "
+            f"новых заявок: {out.get('tickets', 0) or 0}.",
+        }
 
     client = _live_client()
     if worker.BUSY.get("sync"):

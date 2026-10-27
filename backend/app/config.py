@@ -49,6 +49,17 @@ class Settings(BaseSettings):
     session_secret: str = ""
     session_secret_path: str = "./data/web.secret"
 
+    # --- без своего сервера: Vercel + Supabase ---
+    # Секрет в заголовке запросов Telegram на webhook. Пусто — из BOT_TOKEN.
+    webhook_secret: str = ""
+    # Секрет, с которым расписание Supabase вызывает /api/cron/tick.
+    cron_secret: str = ""
+    # Сколько секунд проход может тратить на разбор моделью (лимит Vercel — 300).
+    tick_budget_seconds: int = 150
+    # Подключение к базе без пула: на Vercel каждый вызов — новый процесс.
+    # Включается само, когда задан VERCEL (его ставит Vercel).
+    db_null_pool: bool = False
+
     # --- Telegram: чтение (MTProto user-API) ---
     telegram_api_id: int = 0
     telegram_api_hash: str = ""

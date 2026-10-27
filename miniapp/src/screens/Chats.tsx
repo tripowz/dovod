@@ -148,7 +148,23 @@ export default function Chats({
             Читается {enabled} из {data.chats.length}
           </b>
         </div>
-        {data.live ? (
+        {data.mode === "webhook" ? (
+          <>
+            <p className="m-0 mt-1 text-[13px] leading-snug text-muted">
+              Сообщения присылает Telegram сразу, разбор идёт каждую минуту. Новый чат появится
+              здесь, как только в нём напишут.
+            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button className="!px-3.5 !py-2 !text-[14px]" onClick={() => void sync()}>
+                Разобрать сейчас
+              </Button>
+            </div>
+            <p className="m-0 mt-2 text-[12.5px] leading-snug text-muted">
+              Старую переписку бот не видит — её разово загружают с компьютера:{" "}
+              <span className="font-mono">python -m app.chats history 30</span>.
+            </p>
+          </>
+        ) : data.live ? (
           <>
             <p className="m-0 mt-1 text-[13px] leading-snug text-muted">
               Новые сообщения забираются раз в 15 минут.{" "}

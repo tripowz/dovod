@@ -280,6 +280,16 @@ async def run_polling() -> None:
     Для пилота на одной машине проще вебхука: публичный HTTPS-адрес нужен
     только самому мини-аппу, а не бэкенду бота.
     """
+    info = await call("getWebhookInfo")
+    if info.get("url"):  # type: ignore[union-attr]
+        # Бот уже работает через webhook (Vercel). Удалить его здесь — значит
+        # тихо остановить приём сообщений в рабочей системе.
+        log.warning(
+            "бот подключён к webhook (%s) — локально его не опрашиваю. "
+            "Отключить webhook: python -m app.bot.webhook delete",
+            info["url"],  # type: ignore[index]
+        )
+        await asyncio.Event().wait()
     await call("deleteWebhook")  # иначе getUpdates отвечает 409
     offset = 0
     log.info("бот слушает обновления")

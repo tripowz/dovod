@@ -44,6 +44,7 @@ export interface ChatsFull {
   hotels: string[];
   /** Telethon подключён в этом же процессе — можно обновлять с сайта. */
   live: boolean;
+  mode: "telethon" | "webhook" | "none";
   syncing: boolean;
   history: string;
   history_done: string;

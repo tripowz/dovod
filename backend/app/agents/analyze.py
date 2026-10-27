@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -435,9 +436,16 @@ async def apply_results(
 # --------------------------------------------------------------------------
 
 
-async def analyze_pending(session: AsyncSession, now: datetime | None = None) -> dict:
-    """Разбирает неразобранные сообщения включённых чатов. Возвращает статистику."""
+async def analyze_pending(
+    session: AsyncSession, now: datetime | None = None, budget_s: float | None = None
+) -> dict:
+    """Разбирает неразобранные сообщения включённых чатов. Возвращает статистику.
+
+    `budget_s` — предел времени на вызовы модели: когда он исчерпан, новые
+    пачки не начинаются, остаток разберёт следующий проход.
+    """
     now = now or _now()
+    started = time.monotonic()
     stats = {
         "messages": 0, "prefiltered": 0, "proposals": 0, "noise": 0,
         "skipped": 0, "unverified_links": 0, "calls": 0,
@@ -530,6 +538,9 @@ async def analyze_pending(session: AsyncSession, now: datetime | None = None) ->
         for chat_id, msgs in by_chat.items():
             links = {tg: ref for cid, tg, ref in linked_rows if cid == chat_id}
             for i in range(0, len(msgs), settings.analyze_batch_size):
+                if budget_s is not None and time.monotonic() - started > budget_s:
+                    stats["deferred"] = stats.get("deferred", 0) + len(msgs) - i
+                    continue
                 batch = msgs[i : i + settings.analyze_batch_size]
                 payload = build_input(batch[0].chat.title, batch, list(tasks), links, now)
                 results, usage, model = await classify(payload, suffix)

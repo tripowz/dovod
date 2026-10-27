@@ -22,6 +22,7 @@ from telethon.tl.types import Channel, User
 
 from ..config import settings
 from ..models import FROM_NOW, TELEGRAM_SERVICE_ID, Chat, ChatKind, Message
+from .kinds import kind_by_title
 
 log = logging.getLogger("dovod.reader")
 
@@ -75,14 +76,7 @@ def classify(dialog) -> ChatKind | None:
         return ChatKind.private
     if isinstance(e, Channel) and e.broadcast:
         return None  # каналы — объявления, а не переписка
-    t = (dialog.name or "").lower()
-    if "support" in t or "поддерж" in t:
-        return ChatKind.support
-    if "разраб" in t or "dev" in t:
-        return ChatKind.dev
-    if "продаж" in t or "sales" in t:
-        return ChatKind.sales
-    return ChatKind.team
+    return kind_by_title(dialog.name or "")
 
 
 async def sync_dialogs(

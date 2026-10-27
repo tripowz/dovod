@@ -9,9 +9,12 @@ SQLite для локальной работы, Postgres на сервере — 
 from __future__ import annotations
 
 import logging
+import os
+from uuid import uuid4
 
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 from sqlalchemy.orm import DeclarativeBase
 
 from .config import settings
@@ -21,13 +24,34 @@ class Base(DeclarativeBase):
     pass
 
 
-engine = create_async_engine(
-    settings.database_url,
-    echo=False,
-    # SQLite не любит длинные пулы в асинхронном режиме; для Postgres
-    # значения по умолчанию адекватны.
-    pool_pre_ping=not settings.database_url.startswith("sqlite"),
-)
+def _engine_args(url: str) -> dict:
+    args: dict = {"echo": False}
+    serverless = settings.db_null_pool or bool(os.environ.get("VERCEL"))
+    if url.startswith("postgresql"):
+        # Supabase-пулер (Supavisor) в режиме транзакций не держит
+        # подготовленные запросы между транзакциями: кэш asyncpg выключаем, а
+        # имена делаем уникальными, иначе второй вызов падает на повторе имени.
+        args["connect_args"] = {
+            "statement_cache_size": 0,
+            "prepared_statement_name_func": lambda: f"__dovod_{uuid4().hex}__",
+        }
+    if serverless:
+        # На Vercel каждый вызов — отдельный короткий процесс: пул соединений
+        # там только копит оборванные подключения.
+        args["poolclass"] = NullPool
+    elif not url.startswith("sqlite"):
+        args["pool_pre_ping"] = True
+    return args
+
+
+def _url(url: str) -> str:
+    # Кэш подготовленных запросов самого SQLAlchemy — тоже выключить для пулера.
+    if url.startswith("postgresql+asyncpg") and "prepared_statement_cache_size" not in url:
+        url += ("&" if "?" in url else "?") + "prepared_statement_cache_size=0"
+    return url
+
+
+engine = create_async_engine(_url(settings.database_url), **_engine_args(settings.database_url))
 
 SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 

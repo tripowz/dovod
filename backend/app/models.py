@@ -804,3 +804,18 @@ class LoginRequest(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime)
     code_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class AppState(Base):
+    """Мелкие значения, которые надо помнить между запусками.
+
+    На Vercel нет постоянной памяти процесса: каждое сообщение и каждый
+    проход по расписанию — новый вызов. Поэтому, например, ID владельца
+    Business-аккаунта и дата отправленной сводки лежат в базе.
+    """
+
+    __tablename__ = "app_state"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

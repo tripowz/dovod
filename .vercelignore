@@ -1,0 +1,12 @@
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/.venv
+.env
+**/.env
+backend/data
+*.db
+*.session
+*.session-journal
+hotels*.csv
+backups

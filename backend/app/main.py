@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api.routes import router
+from .api.serverless import router as serverless_router
 from .api.web_auth import router as web_auth_router
 from .config import PROJECT_ROOT, settings
 from .db import init_db
@@ -27,7 +29,11 @@ logging.basicConfig(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()
+    # На Vercel схему не трогаем на каждом холодном старте: её один раз
+    # создаёт python -m app.setup_db, а параллельные ALTER из десятка
+    # одновременных вызовов только мешали бы друг другу.
+    if not os.environ.get("VERCEL"):
+        await init_db()
     yield
 
 
@@ -48,6 +54,7 @@ app.add_middleware(
 
 app.include_router(router)
 app.include_router(web_auth_router)
+app.include_router(serverless_router)
 
 
 @app.get("/health")

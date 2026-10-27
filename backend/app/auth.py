@@ -22,6 +22,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import time
 from dataclasses import dataclass
@@ -124,6 +125,13 @@ def _session_key() -> bytes:
     if "k" in _KEY:
         return _KEY["k"]
     raw = settings.session_secret
+    if not raw and os.environ.get("VERCEL"):
+        # На Vercel диск только для чтения и у каждого вызова свой: ключ из
+        # файла был бы разным у разных вызовов, и вход слетал бы постоянно.
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "SESSION_SECRET не задан в настройках Vercel — вход на сайт невозможен.",
+        )
     if not raw:
         path = Path(settings.session_secret_path)
         if path.exists():
@@ -202,7 +210,7 @@ async def current_staff(
     else:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
-            "Войдите: через Telegram на сайте или откройте приложение из чата с ботом.",
+            "Войдите на сайте по логину и паролю или откройте приложение из чата с ботом.",
         )
 
     if staff is None or not staff.active:

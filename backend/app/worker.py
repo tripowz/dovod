@@ -30,7 +30,6 @@ from .agents.learn import distill_task
 from .bot.telegram import BotError, send, send_morning_digest, send_weekly_report
 from .config import settings
 from .db import SessionLocal, init_db
-from .ingest.reader import fetch_new, make_client, sync_dialogs
 from .models import (
     Chat,
     ChatKind,
@@ -412,6 +411,9 @@ BUSY: dict[str, object] = {}
 
 
 async def cycle(client) -> None:
+    """Проход воркера с Telethon: забрать новое из чатов и прогнать агентов."""
+    from .ingest.reader import fetch_new, sync_dialogs  # Telethon — только здесь
+
     if client is not None:
         try:
             async with SessionLocal() as s:
@@ -421,29 +423,43 @@ async def cycle(client) -> None:
                 log.info("новых чатов: %d, новых сообщений: %d", added, stored)
         except Exception:
             log.exception("чтение чатов упало")
+    await run_agents(SELF_ID.get("id"))
+
+
+async def run_agents(self_id: int | None, budget_s: float | None = None) -> dict:
+    """Агенты по уже сохранённым сообщениям. Один проход, без чтения чатов.
+
+    Его вызывает и воркер с Telethon, и расписание на Vercel. `budget_s` —
+    сколько секунд можно потратить на разбор: у функции Vercel есть предел
+    времени, и лучше остановиться и продолжить на следующем проходе, чем
+    оборваться посередине.
+    """
+    out: dict = {}
     try:
         async with SessionLocal() as s:
-            stats = await analyze_pending(s)
+            stats = await analyze_pending(s, budget_s=budget_s)
+        out["analyze"] = stats
         if stats["messages"]:
             log.info("разбор: %s", stats)
     except Exception:
         log.exception("разбор упал")
     try:
-        await create_tickets_from_chat()
+        out["tickets"] = await create_tickets_from_chat()
     except Exception:
         log.exception("создание обращений из чата упало")
     try:
-        await detect_replies(SELF_ID.get("id"))
+        out["replies"] = await detect_replies(self_id)
     except Exception:
         log.exception("поиск ответов клиенту упал")
     try:
-        await auto_diagnose()
+        out["diagnosed"] = await auto_diagnose()
     except Exception:
         log.exception("авто-диагноз упал")
     try:
-        await learn_from_closed_tasks()
+        out["learned"] = await learn_from_closed_tasks()
     except Exception:
         log.exception("обучение из задач упало")
+    return out
 
 
 async def main() -> None:
@@ -456,6 +472,8 @@ async def main() -> None:
 
 async def start() -> AsyncIOScheduler:
     """Подключается к Telegram и запускает расписание. Не блокирует."""
+    from .ingest.reader import make_client
+
     client = None
     if (
         settings.telegram_api_id

@@ -1,0 +1,14 @@
+# Зависимости функции на Vercel. Telethon сюда намеренно не входит: на Vercel
+# сообщения приходят от Telegram через webhook, а Telethon нужен только на
+# вашем компьютере — для разовой загрузки истории (backend/requirements.txt).
+anthropic>=1.4,<2
+fastapi>=0.115.0
+pydantic>=2.9.0
+pydantic-settings>=2.6.0
+SQLAlchemy[asyncio]>=2.0.36
+asyncpg>=0.30.0
+aiosqlite>=0.20.0
+APScheduler>=3.10.4,<4
+python-dotenv>=1.0.1
+httpx>=0.27.0
+tzdata>=2024.1

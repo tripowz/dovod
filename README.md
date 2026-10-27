@@ -46,10 +46,13 @@ python -m app.run
 (правило включается руководителем); отмена задачи возвращает сообщения в
 разбор, а не удаляет их.
 
-## На сервере
+## Без своего сервера: Supabase + Vercel
 
-Docker: один контейнер, перезапуск после сбоев, HTTPS через Caddy по домену
-или туннель без домена — пошагово в [DEPLOY.md](DEPLOY.md).
+Основной способ: Telegram сам присылает сообщения (Business-бот и бот в
+группах), Supabase хранит данные и раз в минуту будит агентов, Vercel
+показывает сайт. Пошагово — [DEPLOY-VERCEL.md](DEPLOY-VERCEL.md).
+
+Свой сервер с Docker и Telethon — [DEPLOY.md](DEPLOY.md).
 
 ## Запуск на пилоте
 
@@ -167,6 +170,7 @@ python tests/test_chats.py     # источники: включение, ист�
 python tests/test_hotels.py    # чаты → отели: угадывание, таблица, карточка, риск
 python tests/test_web_auth.py  # вход на сайт: пароль, код от бота, cookie, подбор, CSRF
 python tests/test_chats_api.py # экран «Чаты»: включение, согласие, отель, «Обновить сейчас»
+python tests/test_serverless.py # без сервера: webhook, Business, расписание, замок прохода
 ```
 
 ## Что ещё не сделано
