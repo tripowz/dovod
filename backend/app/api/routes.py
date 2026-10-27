@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import secrets
+
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -17,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from .. import hotels as hotel_links
-from .. import service
+from .. import passwords, service
 from ..auth import current_manager, current_staff
 from ..config import settings
 from ..db import get_session
@@ -25,6 +27,7 @@ from ..agents.diagnose import run_diagnosis
 from ..models import (
     Analysis,
     Chat,
+    ChatKind,
     Diagnosis,
     DiagnosisVerdict,
     Hotel,
@@ -140,14 +143,20 @@ class VerdictIn(BaseModel):
 
 
 class StaffCreate(BaseModel):
-    tg_user_id: int
+    # Необязателен: нужен только чтобы узнавать ответы сотрудника клиентам в
+    # чатах. Без него сотрудник получает заглушку — отрицательный ID, которого
+    # в Telegram не бывает.
+    tg_user_id: int | None = None
     name: str = Field(min_length=2, max_length=160)
+    login: str | None = None
     is_manager: bool = False
     wip_limit: int = Field(default=6, ge=1, le=50)
 
 
 class StaffPatch(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=160)
+    login: str | None = None
+    tg_user_id: int | None = None
     is_manager: bool | None = None
     active: bool | None = None
     wip_limit: int | None = Field(default=None, ge=1, le=50)
@@ -1076,7 +1085,25 @@ def _staff_full(s: Staff) -> dict:
         "is_manager": s.is_manager,
         "wip_limit": s.wip_limit,
         "active": s.active,
+        "login": s.login,
+        "has_password": bool(s.password_hash),
+        # Заглушка вместо настоящего Telegram ID — показываем как «не указан».
+        "tg_linked": s.tg_user_id > 0,
     }
+
+
+async def _free_login(session: AsyncSession, wanted: str, exclude_id: int | None = None) -> str:
+    """Свободный логин: «bekzod», а если занят — «bekzod2», «bekzod3»…"""
+    base = wanted
+    n = 1
+    while True:
+        cand = base if n == 1 else f"{base}{n}"
+        other = (
+            await session.execute(select(Staff).where(Staff.login == cand))
+        ).scalar_one_or_none()
+        if other is None or other.id == exclude_id:
+            return cand
+        n += 1
 
 
 @router.get("/staff/manage")
@@ -1105,25 +1132,57 @@ async def add_staff(
     пустит. Если ID уже заведён (например, был отключён), не плодим второго, а
     возвращаем на это внятную ошибку — дубль по Telegram ID сломал бы вход.
     """
-    dup = (
-        await session.execute(select(Staff).where(Staff.tg_user_id == body.tg_user_id))
-    ).scalar_one_or_none()
+    dup = None
+    if body.tg_user_id:
+        dup = (
+            await session.execute(select(Staff).where(Staff.tg_user_id == body.tg_user_id))
+        ).scalar_one_or_none()
     if dup is not None:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             f"Этот Telegram ID уже у «{dup.name}»"
             + ("" if dup.active else " (отключён — включите его в списке)"),
         )
+    wanted = (body.login or passwords.login_from_name(body.name)).strip().lower()
+    if not passwords.valid_login(wanted):
+        raise HTTPException(422, "Логин — латиница, цифры, точка, дефис; от 2 символов.")
+    if body.login:
+        taken = (await session.execute(select(Staff).where(Staff.login == wanted))).scalar_one_or_none()
+        if taken is not None:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"Логин «{wanted}» уже у «{taken.name}».")
+    login = await _free_login(session, wanted)
+    password = passwords.generate_password()
     s = Staff(
-        tg_user_id=body.tg_user_id,
+        tg_user_id=body.tg_user_id or -secrets.randbelow(10**12) - 10**9,
         name=body.name,
         is_manager=body.is_manager,
         wip_limit=body.wip_limit,
+        login=login,
+        password_hash=passwords.hash_password(password),
     )
     session.add(s)
     await session.commit()
     await session.refresh(s)
-    return _staff_full(s)
+    # Пароль показывается один раз — тому, кто завёл сотрудника.
+    return {**_staff_full(s), "password": password}
+
+
+@router.post("/staff/{staff_id}/password")
+async def reset_password(
+    staff_id: int,
+    staff: Staff = Depends(current_manager),
+    session: AsyncSession = Depends(get_session),
+):
+    """Новый пароль сотруднику. Руководителю. Старый перестаёт работать сразу."""
+    s = await session.get(Staff, staff_id)
+    if s is None:
+        raise HTTPException(404, "Сотрудник не найден")
+    if not s.login:
+        s.login = await _free_login(session, passwords.login_from_name(s.name), s.id)
+    password = passwords.generate_password()
+    s.password_hash = passwords.hash_password(password)
+    await session.commit()
+    return {"login": s.login, "password": password}
 
 
 @router.patch("/staff/{staff_id}")
@@ -1151,6 +1210,20 @@ async def edit_staff(
         )
     if body.name is not None:
         s.name = body.name
+    if body.login is not None:
+        wanted = body.login.strip().lower()
+        if not passwords.valid_login(wanted):
+            raise HTTPException(422, "Логин — латиница, цифры, точка, дефис; от 2 символов.")
+        if await _free_login(session, wanted, s.id) != wanted:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"Логин «{wanted}» уже занят.")
+        s.login = wanted
+    if body.tg_user_id is not None:
+        if body.tg_user_id <= 0:
+            raise HTTPException(422, "Telegram ID — положительное число.")
+        other = (await session.execute(select(Staff).where(Staff.tg_user_id == body.tg_user_id))).scalar_one_or_none()
+        if other is not None and other.id != s.id:
+            raise HTTPException(status.HTTP_409_CONFLICT, f"Этот Telegram ID уже у «{other.name}».")
+        s.tg_user_id = body.tg_user_id
     if body.is_manager is not None:
         s.is_manager = body.is_manager
     if body.active is not None:
@@ -1365,6 +1438,206 @@ async def toggle_chat(
         c.consent_note = consent_note
     await session.commit()
     return {"ok": True, "enabled": c.enabled}
+
+
+class ChatPatch(BaseModel):
+    enabled: bool | None = None
+    kind: str | None = None
+    hotel: str | None = None  # название отеля; "" — отвязать
+    consent_note: str | None = None
+
+
+def _chat_out(c: Chat, stats: dict[int, tuple[int, datetime | None]], hotels: dict[int, str]) -> dict:
+    n, last = stats.get(c.id, (0, None))
+    return {
+        "id": c.id, "title": c.title, "kind": c.kind.value,
+        "enabled": c.enabled, "consent_note": c.consent_note,
+        "needs_consent": c.kind.value == "private",
+        "hotel_id": c.hotel_id, "hotel": hotels.get(c.hotel_id or 0, ""),
+        "messages": n, "last_message_at": last,
+    }
+
+
+@router.get("/chats/full")
+async def chats_full(
+    staff: Staff = Depends(current_manager),
+    session: AsyncSession = Depends(get_session),
+):
+    """Чаты, которые видит Telethon, со счётчиками — для экрана «Чаты»."""
+    from .. import worker
+
+    rows = (await session.execute(select(Chat).order_by(Chat.enabled.desc(), Chat.title))).scalars().all()
+    stats = {
+        cid: (n, last)
+        for cid, n, last in (
+            await session.execute(
+                select(Message.chat_id, func.count(Message.id), func.max(Message.sent_at))
+                .group_by(Message.chat_id)
+            )
+        ).all()
+    }
+    hotels = {h.id: h.name for h in (await session.execute(select(Hotel))).scalars()}
+    return {
+        "chats": [_chat_out(c, stats, hotels) for c in rows],
+        "hotels": sorted(hotels.values()),
+        # Можно ли обновить и загрузить историю прямо с сайта: только когда
+        # Telethon подключён в этом же процессе (python -m app.run).
+        "live": "client" in worker.LIVE,
+        "syncing": worker.BUSY.get("sync", False),
+        "history": worker.BUSY.get("history", ""),
+        "history_done": worker.BUSY.get("history_done", ""),
+    }
+
+
+@router.patch("/chats/{chat_id}")
+async def patch_chat(
+    chat_id: int,
+    body: ChatPatch,
+    staff: Staff = Depends(current_manager),
+    session: AsyncSession = Depends(get_session),
+):
+    from .. import hotels as hotel_links
+    from ..models import TELEGRAM_SERVICE_ID
+
+    c = await session.get(Chat, chat_id)
+    if c is None:
+        raise HTTPException(404, "Чат не найден")
+    if body.kind is not None:
+        try:
+            kind = ChatKind(body.kind)
+        except ValueError:
+            raise HTTPException(422, "Неизвестный тип чата") from None
+        # Тип «личная» держит правило согласия: сменой типа его не обойти.
+        if (c.kind == ChatKind.private) != (kind == ChatKind.private):
+            raise HTTPException(409, "Личную переписку нельзя сделать группой и наоборот.")
+        c.kind = kind
+    if body.enabled is not None:
+        if body.enabled and c.tg_chat_id == TELEGRAM_SERVICE_ID:
+            raise HTTPException(409, "Это служебный чат Telegram с кодами входа. Его читать нельзя.")
+        note = (body.consent_note or "").strip()
+        if body.enabled and not c.enabled and c.kind == ChatKind.private and not (note or c.consent_note):
+            raise HTTPException(
+                409,
+                "Это личная переписка. Укажите основание: чья это переписка и чьё согласие.",
+            )
+        if body.enabled and not c.enabled and c.last_seen_msg_id == 0:
+            from ..models import FROM_NOW
+
+            c.last_seen_msg_id = FROM_NOW  # с этого момента, без истории
+        c.enabled = body.enabled
+        if note:
+            c.consent_note = note
+    if body.hotel is not None:
+        from ..hotels import suggest
+
+        await hotel_links.link(session, c, body.hotel, suggest(c.title, c.kind)[1], {})
+    await session.commit()
+    hotel = (await session.get(Hotel, c.hotel_id)).name if c.hotel_id else ""
+    return {"ok": True, "enabled": c.enabled, "kind": c.kind.value, "hotel": hotel}
+
+
+class EnableAll(BaseModel):
+    private: bool = False
+    consent_note: str = ""
+
+
+@router.post("/chats/enable-all")
+async def enable_all(
+    body: EnableAll,
+    staff: Staff = Depends(current_manager),
+    session: AsyncSession = Depends(get_session),
+):
+    """Включает все группы, а с основанием — и личные переписки."""
+    from ..models import FROM_NOW, TELEGRAM_SERVICE_ID
+
+    note = body.consent_note.strip()
+    if body.private and not note:
+        raise HTTPException(409, "Для личных переписок укажите основание: чья это переписка.")
+    n = 0
+    for c in (await session.execute(select(Chat).where(Chat.enabled.is_(False)))).scalars():
+        if c.tg_chat_id == TELEGRAM_SERVICE_ID:
+            continue
+        if c.kind == ChatKind.private:
+            if not body.private:
+                continue
+            c.consent_note = note
+        c.enabled = True
+        if c.last_seen_msg_id == 0:
+            c.last_seen_msg_id = FROM_NOW
+        n += 1
+    await session.commit()
+    return {"ok": True, "enabled": n, "message": f"Включено чатов: {n}. Читаются с этого момента."}
+
+
+def _live_client():
+    from .. import worker
+
+    client = worker.LIVE.get("client")
+    if client is None:
+        raise HTTPException(
+            409,
+            "Чтение чатов работает в другом процессе. Запустите всё одной командой "
+            "python -m app.run — тогда это можно делать с сайта.",
+        )
+    return client
+
+
+@router.post("/sync")
+async def sync_now(staff: Staff = Depends(current_manager)):
+    """Забрать новые сообщения и разобрать их сейчас, не дожидаясь расписания."""
+    import asyncio
+
+    from .. import worker
+
+    client = _live_client()
+    if worker.BUSY.get("sync"):
+        return {"ok": True, "message": "Уже обновляется — подождите минуту."}
+
+    async def run() -> None:
+        worker.BUSY["sync"] = True
+        try:
+            await worker.cycle(client)
+        finally:
+            worker.BUSY["sync"] = False
+
+    asyncio.create_task(run())
+    return {"ok": True, "message": "Забираю новые сообщения и разбираю. Займёт до минуты."}
+
+
+class HistoryIn(BaseModel):
+    days: int = Field(default=30, ge=1, le=90)
+
+
+@router.post("/chats/history")
+async def load_history(body: HistoryIn, staff: Staff = Depends(current_manager)):
+    """Догружает историю включённых чатов за N дней — в фоне."""
+    import asyncio
+
+    from .. import worker
+    from ..db import SessionLocal
+    from ..ingest.reader import fetch_history
+
+    client = _live_client()
+    if worker.BUSY.get("history"):
+        return {"ok": True, "message": f"История уже загружается: {worker.BUSY['history']}"}
+
+    async def run() -> None:
+        worker.BUSY["history"] = f"за {body.days} дн., идёт…"
+        try:
+            async with SessionLocal() as s:
+                read, stored = await fetch_history(client, s, body.days)
+            worker.BUSY["history"] = ""
+            worker.BUSY["history_done"] = f"Загружено {stored} сообщений из {read} чатов"
+        except Exception as exc:  # noqa: BLE001
+            worker.BUSY["history"] = ""
+            worker.BUSY["history_done"] = f"Не удалось: {exc}"
+
+    asyncio.create_task(run())
+    return {
+        "ok": True,
+        "message": f"Загружаю историю за {body.days} дн. Это займёт несколько минут — "
+        "разбор пойдёт следом, свежие сообщения впереди.",
+    }
 
 
 @router.get("/rules")

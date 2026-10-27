@@ -295,6 +295,9 @@ class Staff(Base):
     # человек перестаёт заканчивать и начинает переключаться.
     wip_limit: Mapped[int] = mapped_column(Integer, default=6)
     active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    # Вход на сайт: логин и хэш пароля (scrypt). Пусто — на сайт не войти.
+    login: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

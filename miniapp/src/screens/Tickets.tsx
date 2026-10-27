@@ -314,7 +314,7 @@ export default function Tickets({
                 <div className="mt-3.5 flex flex-wrap gap-2">
                   {t.awaiting_reply && (
                     <Button className="flex-1" onClick={() => void reply(t)}>
-                      Ответить в Telegram
+                      Ответил клиенту
                     </Button>
                   )}
                   <Button

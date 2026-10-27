@@ -33,6 +33,7 @@ from urllib.parse import urlencode
 BACKEND = Path(__file__).resolve().parents[1]
 TOKEN = "123456:TEST-TOKEN-NOT-REAL"
 MANAGER_ID = 555
+WEB_PASSWORD = "k7mq-x2vd-p9wn"
 OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(tempfile.mkdtemp(prefix="dovod-shots-"))
 OUT.mkdir(parents=True, exist_ok=True)
 
@@ -45,8 +46,7 @@ os.environ.update({
     "TELEGRAM_SESSION_PATH": str(_tmp / "s.session"),
     "ANTHROPIC_API_KEY": "",
     "MINIAPP_URL": "",
-    "BOT_USERNAME": "dovod_test_bot",
-})
+    })
 sys.path.insert(0, str(BACKEND))
 
 from playwright.sync_api import Page, sync_playwright  # noqa: E402
@@ -95,10 +95,15 @@ async def prepare() -> None:
 
     from app import seed
     from app.db import SessionLocal
-    from app.models import Chat, ChatKind, Hotel, Message, Proposal, ProposalKind, ProposalState, Task
+    from app.models import Chat, ChatKind, Hotel, Message, Proposal, ProposalKind, ProposalState, Staff, Task
 
     await seed.main(demo=True)
     now = datetime.utcnow()
+    from app import passwords
+    async with SessionLocal() as s:
+        boss = (await s.execute(select(Staff).where(Staff.tg_user_id == MANAGER_ID))).scalar_one()
+        boss.login, boss.password_hash = "bekzod", passwords.hash_password(WEB_PASSWORD)
+        await s.commit()
     async with SessionLocal() as s:
         chat = Chat(tg_chat_id=-1001, title="SmartBooking · Продукт", kind=ChatKind.team, enabled=True)
         s.add(chat)
@@ -269,7 +274,7 @@ def as_manager(browser, base: str) -> list[str]:
     check("разбор ИИ готов к открытию чата", visible(page, re.compile(r"^Разбор ИИ$")))
     check("черновик ответа на месте", visible(page, "Черновик ответа"))
     shot(page, "05_manager_ticket_ai")
-    t = toast(page, lambda: page.get_by_role("button", name="Ответить в Telegram").first.click())
+    t = toast(page, lambda: page.get_by_role("button", name="Ответил клиенту").first.click())
     check("ответ клиенту фиксируется", "таймер" in t, t)
     check("разбор схлопнулся после ответа", visible(page, re.compile("Разбор ИИ отработан")))
 
@@ -320,70 +325,49 @@ def as_employee(browser, base: str) -> list[str]:
 
 
 def as_web(browser, base: str) -> list[str]:
-    """Сайт в обычном браузере, без Telegram: вход кодом из бота."""
-    from urllib.parse import parse_qs, urlparse
-
-    from app.api.web_auth import START_PREFIX, issue_code
-    from app.models import Staff
-
+    """Сайт в обычном браузере, без Telegram и без бота: логин и пароль."""
     ctx = browser.new_context(viewport={"width": 1280, "height": 860}, locale="ru-RU")
     # Настоящий SDK вне Telegram не нужен — и в тестовой сети недоступен.
     ctx.route("**/telegram-web-app.js", lambda route: route.fulfill(
         status=200, content_type="application/javascript", body="/* вне Telegram */"))
-    ctx.route("https://t.me/**", lambda route: route.fulfill(status=200, body="telegram"))
     page = ctx.new_page()
     errors: list[str] = []
     page.on("console", lambda m: errors.append(m.text) if m.type == "error" and "401" not in m.text else None)
     page.goto(base)
-    check("в браузере — экран входа", visible(page, "Войти через Telegram"))
+    check("в браузере — вход по логину и паролю", visible(page, "Логин и пароль выдаёт руководитель"))
     shot(page, "09_web_login")
 
-    with ctx.expect_page() as popup:
-        page.get_by_role("button", name="Войти через Telegram").click()
-    tg_tab = popup.value
-    try:
-        tg_tab.wait_for_url("https://t.me/**", timeout=8000)
-    except Exception:  # noqa: BLE001
-        pass
-    check("Telegram открыт в новой вкладке", tg_tab.url.startswith("https://t.me/dovod_test_bot?start=login_"), tg_tab.url)
-    tg_tab.close()
-    check("страница ждёт код", visible(page, "Введите код из сообщения бота"))
-
-    # Бот здесь не запущен — код выдаём так же, как выдал бы он.
-    href = page.get_by_role("link", name="Не открылся?").get_attribute("href") or ""
-    nonce = parse_qs(urlparse(href).query)["start"][0][len(START_PREFIX):]
-
-    async def code() -> str:
-        from sqlalchemy import select
-        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-
-        # Своё подключение: общее привязано к другому циклу событий.
-        engine = create_async_engine(os.environ["DATABASE_URL"])
-        try:
-            async with async_sessionmaker(engine, expire_on_commit=False)() as s:
-                boss = (await s.execute(select(Staff).where(Staff.tg_user_id == MANAGER_ID))).scalar_one()
-                return await issue_code(s, nonce, boss) or ""
-        finally:
-            await engine.dispose()
-
-    from concurrent.futures import ThreadPoolExecutor
-
-    with ThreadPoolExecutor(1) as pool:  # sync-Playwright уже держит цикл событий
-        c = pool.submit(asyncio.run, code()).result()
-    page.get_by_label("Код из Telegram").fill("000000" if c != "000000" else "111111")
-    check("неверный код — понятная ошибка", visible(page, re.compile("Код не подходит")))
-    page.get_by_label("Код из Telegram").fill(c)
-    check("верный код — вход", visible(page, "Отчёт", timeout=8000))
+    page.get_by_label("Логин").fill("bekzod")
+    page.get_by_label("Пароль").fill("неверный")
+    page.get_by_role("button", name="Войти", exact=True).click()
+    check("неверный пароль — понятная ошибка", visible(page, "Неверный логин или пароль"))
+    page.get_by_label("Пароль").fill(WEB_PASSWORD)
+    page.get_by_role("button", name="Войти", exact=True).click()
+    check("верный пароль — вход", visible(page, "Сводка", timeout=8000))
     check("в браузере есть «Выйти»", page.get_by_role("button", name="Выйти").is_visible())
     page.wait_for_load_state("networkidle")
     shot(page, "10_web_report")
-    tab(page, "Клиенты")
-    check("сайт работает по cookie", visible(page, "Hotel Registon"))
+
+    tab(page, "Команда")
+    page.get_by_role("button", name="Чаты", exact=True).click()
+    check("экран «Чаты» — что читается", visible(page, re.compile(r"Читается \d+ из \d+")))
+    page.get_by_role("button", name="Все", exact=True).click()
+    page.get_by_label("Поиск чатов").fill("Registon")
+    check("поиск по чатам", visible(page, "Hotel Registon & Smartbooking"))
+    page.wait_for_timeout(300)
+    shot(page, "11_web_chats")
+
+    page.get_by_role("button", name="Сотрудники", exact=True).click()
+    page.get_by_label("Имя").fill("Малика Каримова")
+    page.get_by_role("button", name="Добавить и выдать пароль").click()
+    check("сотрудник добавлен с логином и паролем", visible(page, "malika.karimova"))
+    shot(page, "12_web_new_staff")
+
     page.reload()
     page.wait_for_load_state("networkidle")
-    check("после перезагрузки вход сохранён", visible(page, "Сводка"))
+    check("после перезагрузки вход сохранён", page.get_by_role("button", name="Выйти").is_visible())
     page.get_by_role("button", name="Выйти").click()
-    check("выход возвращает к входу", visible(page, "Войти через Telegram"))
+    check("выход возвращает к входу", visible(page, "Логин и пароль выдаёт руководитель"))
     ctx.close()
     return errors
 

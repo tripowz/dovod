@@ -1,4 +1,6 @@
-"""Вход на сайт через Telegram.
+"""Вход на сайт: по логину и паролю, а если подключён бот — ещё и кодом из Telegram.
+
+Код через бота:
 
 1. Сайт: POST /api/auth/start — получает ссылку в бота с одноразовым ключом.
 2. Человек открывает ссылку, бот видит его Telegram ID (это подтверждает сам
@@ -27,6 +29,7 @@ from ..auth import CSRF_HEADER, SESSION_COOKIE, SESSION_DAYS, make_session
 from ..config import settings
 from ..db import get_session
 from ..models import LoginRequest, Staff
+from ..passwords import check_password
 
 router = APIRouter(prefix="/api/auth")
 
@@ -146,6 +149,23 @@ async def verify(
     req.used_at = now
     await session.commit()
 
+    _set_session(request, response, staff)
+    return {"id": staff.id, "name": staff.name, "is_manager": staff.is_manager}
+
+
+# Подбор пароля: не больше 10 неудачных попыток на логин за 15 минут.
+# В памяти процесса — сайт и API живут в одном процессе.
+_FAILS: dict[str, list[datetime]] = {}
+FAIL_WINDOW = timedelta(minutes=15)
+MAX_FAILS = 10
+
+
+class LoginIn(BaseModel):
+    login: str
+    password: str
+
+
+def _set_session(request: Request, response: Response, staff: Staff) -> None:
     secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
     response.set_cookie(
         SESSION_COOKIE,
@@ -156,6 +176,42 @@ async def verify(
         secure=secure,
         path="/",
     )
+
+
+@router.get("/methods")
+async def methods():
+    """Какие способы входа доступны: код через бота — только если бот есть."""
+    return {"password": True, "telegram": bool(settings.bot_token)}
+
+
+@router.post("/login")
+async def login(
+    body: LoginIn,
+    request: Request,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+):
+    if request.headers.get(CSRF_HEADER) != "1":
+        raise HTTPException(403, "Запрос не с сайта Довода.")
+    name = body.login.strip().lower()
+    now = _now()
+    fails = [t for t in _FAILS.get(name, []) if now - t < FAIL_WINDOW]
+    _FAILS[name] = fails
+    if len(fails) >= MAX_FAILS:
+        raise HTTPException(429, "Слишком много неверных попыток. Подождите 15 минут.")
+
+    staff = (
+        await session.execute(select(Staff).where(Staff.login == name))
+    ).scalar_one_or_none()
+    # Одна и та же ошибка для «нет логина» и «не тот пароль»: иначе по ответу
+    # можно перебрать, какие логины существуют.
+    if staff is None or not check_password(body.password, staff.password_hash):
+        fails.append(now)
+        raise HTTPException(401, "Неверный логин или пароль.")
+    if not staff.active:
+        raise HTTPException(403, "Ваш доступ отключён. Обратитесь к руководителю.")
+    _FAILS.pop(name, None)
+    _set_session(request, response, staff)
     return {"id": staff.id, "name": staff.name, "is_manager": staff.is_manager}
 
 

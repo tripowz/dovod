@@ -354,11 +354,46 @@ export function Choice({
   return (
     <button
       onClick={onClick}
+      data-on={on}
+      aria-pressed={on}
       className={`tap rounded-full px-3.5 py-[7px] text-[14px] font-medium ${
         on ? "bg-accent text-onAccent" : "bg-bg text-ink"
       } ${className}`}
     >
       {children}
+    </button>
+  );
+}
+
+/** Переключатель iOS. */
+export function Switch({
+  on,
+  onChange,
+  disabled,
+  label,
+}: {
+  on: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+  label?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!on)}
+      className={`relative h-[31px] w-[51px] shrink-0 rounded-full transition-colors disabled:opacity-40 ${
+        on ? "bg-moss" : "bg-fill"
+      }`}
+    >
+      <span
+        className={`absolute left-[2px] top-[2px] h-[27px] w-[27px] rounded-full bg-white shadow-[0_3px_8px_rgba(0,0,0,0.15),0_1px_1px_rgba(0,0,0,0.16)] transition-transform ${
+          on ? "translate-x-[20px]" : ""
+        }`}
+      />
     </button>
   );
 }

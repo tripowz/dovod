@@ -18,14 +18,15 @@ HMAC-подписью. Это единственное доказательст�
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
+import secrets
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import parse_qsl
-
-import base64
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
@@ -111,12 +112,32 @@ SESSION_DAYS = 30
 CSRF_HEADER = "X-Dovod"
 
 
+_KEY: dict[str, bytes] = {}
+
+
 def _session_key() -> bytes:
-    if not settings.bot_token:
-        raise ValueError("BOT_TOKEN не задан — подписать сессию нечем")
-    # Отдельный ключ, производный от токена: подпись сессии не совпадает ни с
-    # чем, что Telegram подписывает тем же токеном.
-    return hashlib.sha256(b"dovod-web-session:" + settings.bot_token.encode()).digest()
+    """Ключ подписи сессий: из SESSION_SECRET или из файла, созданного однажды.
+
+    От токена бота не зависит: сайт работает и без бота, а смена токена не
+    должна разлогинивать всю команду.
+    """
+    if "k" in _KEY:
+        return _KEY["k"]
+    raw = settings.session_secret
+    if not raw:
+        path = Path(settings.session_secret_path)
+        if path.exists():
+            raw = path.read_text().strip()
+        else:
+            raw = secrets.token_hex(32)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(raw)
+            try:
+                path.chmod(0o600)
+            except OSError:
+                pass  # Windows: права на файл задаются иначе
+    _KEY["k"] = hashlib.sha256(b"dovod-web-session:" + raw.encode()).digest()
+    return _KEY["k"]
 
 
 def make_session(staff_id: int, now: float | None = None) -> str:

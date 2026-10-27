@@ -1,11 +1,14 @@
-"""Всё одной командой: мини-апп, бот и воркер в одном окне.
+"""Всё одной командой: сайт, чтение чатов и разбор в одном окне.
 
     python -m app.run
 
 Перед стартом проверяет настройки и говорит по-человечески, чего не хватает.
-Если адрес мини-аппа не задан (или это временный адрес trycloudflare, который
-меняется при каждом запуске) и установлен `cloudflared`, сам поднимает туннель
-и подставляет свежий адрес в кнопку бота — менять `.env` руками не нужно.
+При первом запуске выдаёт руководителю логин и пароль для сайта.
+
+Бот не обязателен. Если он подключён (BOT_TOKEN), работает и он: вход кодом,
+мини-апп в Telegram, сводка в 09:00. Если адрес сайта не задан (или он
+временный, trycloudflare) и установлен `cloudflared`, команда сама поднимает
+туннель, чтобы сайт открывался не только на этом компьютере.
 
 Процессы по отдельности (`app.bot.telegram`, `app.worker`, `uvicorn`) работают
 как раньше; эта команда их не заменяет, а собирает вместе.
@@ -17,6 +20,7 @@ import asyncio
 import logging
 import os
 import re
+import secrets
 import shutil
 import sys
 from pathlib import Path
@@ -24,7 +28,7 @@ from pathlib import Path
 import uvicorn
 from sqlalchemy import select
 
-from . import seed, worker
+from . import passwords, seed, worker
 from .bot import telegram as bot
 from .config import PROJECT_ROOT, settings
 from .db import SessionLocal, init_db
@@ -49,42 +53,40 @@ async def preflight() -> bool:
     print("\nПроверка настроек")
     fatal = False
 
-    bot_name = ""
-    if not settings.bot_token:
-        line(False, "BOT_TOKEN", "Создайте бота у @BotFather и впишите токен в .env.")
-        fatal = True
-    else:
+    if settings.bot_token:
         try:
             me = await bot.call("getMe")
-            bot_name = me.get("username", "")  # type: ignore[union-attr]
-            line(True, f"бот @{bot_name}")
+            line(True, f"бот @{me.get('username', '')} — по желанию: вход кодом и мини-апп в Telegram")  # type: ignore[union-attr]
         except Exception as exc:  # noqa: BLE001
-            line(False, "BOT_TOKEN не принят Telegram", f"{exc}\nПроверьте токен у @BotFather.")
-            fatal = True
+            line(None, "BOT_TOKEN не принят Telegram — бот выключен", f"{exc}")
+            settings.bot_token = ""
+    else:
+        line(True, "без бота: вход на сайт по логину и паролю")
 
-    if not settings.manager_tg_user_id:
-        line(
-            False,
-            "MANAGER_TG_USER_ID",
-            f"Напишите боту {'@' + bot_name if bot_name else ''} /id и впишите число в .env.\n"
-            "Пока его нет, бот ответит на /id, но в мини-апп никто не войдёт.",
+    await seed.main(demo=False, quiet=True)  # правила; повторный запуск ничего не ломает
+    boss, password = await ensure_manager()
+    if boss is None:
+        line(False, "руководитель", "Впишите в .env MANAGER_NAME — имя руководителя.")
+        fatal = True
+    elif password:
+        line(True, f"руководитель: {boss.name}")
+        print(
+            "\n  ┌─ Вход на сайт ─────────────────────────────\n"
+            f"  │  логин:  {boss.login}\n"
+            f"  │  пароль: {password}\n"
+            "  │  Запишите: пароль показывается один раз.\n"
+            "  │  Новый — в «Команде» на сайте или: python -m app.users password " + str(boss.login) + "\n"
+            "  └────────────────────────────────────────────\n"
         )
     else:
-        await seed.main(demo=False, quiet=True)  # руководитель и правила; повторный запуск ничего не ломает
-        async with SessionLocal() as s:
-            boss = (
-                await s.execute(
-                    select(Staff).where(Staff.tg_user_id == settings.manager_tg_user_id)
-                )
-            ).scalar_one_or_none()
-        line(boss is not None, f"руководитель: {boss.name if boss else '—'}")
+        line(True, f"руководитель: {boss.name} (логин {boss.login})")
 
     if DIST.is_file():
-        line(True, "сборка мини-аппа")
+        line(True, "сборка сайта")
     else:
         line(
             False,
-            "сборка мини-аппа не найдена",
+            "сборка сайта не найдена",
             "cd ..\\miniapp; npm install; npm run build",
         )
 
@@ -126,20 +128,49 @@ def find_cloudflared() -> str | None:
     return None
 
 
+async def ensure_manager() -> tuple[Staff | None, str]:
+    """Руководитель с логином и паролем. Пароль — только если он создан сейчас."""
+    async with SessionLocal() as s:
+        q = select(Staff).where(Staff.is_manager.is_(True), Staff.active.is_(True))
+        if settings.manager_tg_user_id:
+            q = select(Staff).where(Staff.tg_user_id == settings.manager_tg_user_id)
+        boss = (await s.execute(q.order_by(Staff.id))).scalars().first()
+        if boss is None:
+            if not settings.manager_name.strip():
+                return None, ""
+            # Без Telegram ID — заглушка: отрицательных ID в Telegram не бывает.
+            boss = Staff(
+                tg_user_id=settings.manager_tg_user_id or -secrets.randbelow(10**12) - 10**9,
+                name=settings.manager_name.strip(),
+                is_manager=True,
+            )
+            s.add(boss)
+            await s.flush()
+        password = ""
+        if not boss.login:
+            boss.login = passwords.login_from_name(boss.name)
+        if not boss.password_hash:
+            password = passwords.generate_password()
+            boss.password_hash = passwords.hash_password(password)
+        await s.commit()
+        await s.refresh(boss)
+        return boss, password
+
+
 async def start_tunnel() -> asyncio.subprocess.Process | None:
     """Поднимает cloudflared и подставляет его адрес в settings.miniapp_url."""
     fixed = settings.miniapp_url.startswith("https://") and "trycloudflare.com" not in settings.miniapp_url
     if fixed:
-        line(True, f"адрес мини-аппа: {settings.miniapp_url}")
+        line(True, f"адрес сайта: {settings.miniapp_url}")
         return None
     exe = find_cloudflared()
     if exe is None:
         line(
             None,
-            "кнопка мини-аппа не появится",
-            "MINIAPP_URL не задан, а cloudflared не установлен.\n"
-            "Установите: winget install Cloudflare.cloudflared — и перезапустите.\n"
-            "Бот при этом работает: /id, /digest, /report.",
+            "сайт доступен только на этом компьютере",
+            "Чтобы открыть его команде: winget install Cloudflare.cloudflared — и перезапустите\n"
+            "(временный адрес), или разверните на сервере с доменом (DEPLOY.md).\n"
+            "Сайт на этом компьютере работает: http://localhost:" + str(settings.api_port),
         )
         return None
 
@@ -160,7 +191,7 @@ async def start_tunnel() -> asyncio.subprocess.Process | None:
     except TimeoutError:
         pass
     if not url:
-        line(None, "туннель не поднялся за 40 с", "Кнопка мини-аппа не появится. Бот работает.")
+        line(None, "туннель не поднялся за 40 с", "Снаружи сайт недоступен; на этом компьютере работает.")
         proc.kill()
         return None
 
@@ -193,15 +224,19 @@ async def main() -> int:
     server = uvicorn.Server(
         uvicorn.Config(app, host=settings.api_host, port=settings.api_port, log_level="warning")
     )
-    await bot.setup()
+    if settings.bot_token:
+        await bot.setup()
     await worker.start()
     print(
-        f"\nДовод запущен.\n  Сайт в браузере: http://localhost:{settings.api_port}"
-        + (f"\n  Снаружи (и мини-апп в Telegram): {settings.miniapp_url}" if settings.miniapp_url else "")
-        + "\n  Вход на сайте — через Telegram, кодом от бота.\nОстановить: Ctrl+C\n"
+        f"\nДовод запущен.\n  Сайт: http://localhost:{settings.api_port}"
+        + (f"\n  Снаружи, для команды: {settings.miniapp_url}" if settings.miniapp_url else "")
+        + "\nОстановить: Ctrl+C\n"
     )
+    jobs = [server.serve()]
+    if settings.bot_token:
+        jobs.append(bot.run_polling())
     try:
-        await asyncio.gather(server.serve(), bot.run_polling())
+        await asyncio.gather(*jobs)
     finally:
         if tunnel is not None and tunnel.returncode is None:
             tunnel.kill()

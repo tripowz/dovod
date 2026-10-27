@@ -184,6 +184,80 @@ async def main() -> None:
 
     print()
     print("=" * 62)
+    print("ВХОД ПО ЛОГИНУ И ПАРОЛЮ (БЕЗ БОТА)")
+    print("=" * 62)
+    from app import passwords
+    from app import run as run_mod
+    from app.api import web_auth as wa
+
+    async with SessionLocal() as s:
+        boss = await s.get(Staff, 1)
+        boss.login = "bekzod"
+        boss.password_hash = passwords.hash_password("k7mq-x2vd-p9wn")
+        await s.commit()
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        r = await c.get("/api/auth/methods")
+        check("способы входа видны", r.json() == {"password": True, "telegram": True})
+        r = await c.post("/api/auth/login", json={"login": "bekzod", "password": "k7mq-x2vd-p9wn"})
+        check("вход без заголовка сайта отклонён", r.status_code == 403)
+        r = await c.post("/api/auth/login", json={"login": "bekzod", "password": "нет"}, headers=H)
+        r2 = await c.post("/api/auth/login", json={"login": "nobody", "password": "нет"}, headers=H)
+        check("неверный пароль и чужой логин — одна ошибка", r.status_code == r2.status_code == 401 and r.text == r2.text, r.text)
+        r = await c.post("/api/auth/login", json={"login": " Bekzod ", "password": "k7mq-x2vd-p9wn"}, headers=H)
+        check("вход по паролю (регистр логина не важен)", r.status_code == 200 and r.json()["name"] == "Бекзод", r.text[:80])
+        check("после входа — сессия", (await c.get("/api/me")).status_code == 200)
+
+        r = await c.post("/api/staff", json={"name": "Малика Каримова"}, headers=H)
+        new = r.json()
+        check("сотрудник без Telegram ID заводится", r.status_code == 201 and new["tg_linked"] is False, r.text[:120])
+        check("логин из имени", new["login"] == "malika.karimova", new.get("login"))
+        check("пароль показан один раз", len(new.get("password", "")) == 14)
+        r = await c.post("/api/staff", json={"name": "Малика Каримова"}, headers=H)
+        check("тёзка получает свободный логин", r.json()["login"] == "malika.karimova2", r.json().get("login"))
+        r = await c.get("/api/staff/manage")
+        check("в списке пароля нет", all("password" not in x for x in r.json()) and all("password_hash" not in x for x in r.json()))
+        r = await c.post(f"/api/staff/{new['id']}/password", headers=H)
+        fresh = r.json()["password"]
+        check("новый пароль выдаётся", fresh and fresh != new["password"])
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c2:
+        r = await c2.post("/api/auth/login", json={"login": "malika.karimova", "password": new["password"]}, headers=H)
+        check("старый пароль после сброса не работает", r.status_code == 401)
+        r = await c2.post("/api/auth/login", json={"login": "malika.karimova", "password": fresh}, headers=H)
+        check("новый пароль работает", r.status_code == 200)
+        r = await c2.get("/api/staff/manage")
+        check("сотрудник не видит управление командой", r.status_code == 403)
+
+        wa._FAILS.clear()
+        for _ in range(10):
+            await c2.post("/api/auth/login", json={"login": "bekzod", "password": "x"}, headers=H)
+        r = await c2.post("/api/auth/login", json={"login": "bekzod", "password": "k7mq-x2vd-p9wn"}, headers=H)
+        check("после 10 ошибок логин заблокирован, даже верным паролем", r.status_code == 429)
+        wa._FAILS.clear()
+
+    print()
+    print("=" * 62)
+    print("ПЕРВЫЙ ЗАПУСК БЕЗ БОТА")
+    print("=" * 62)
+    from app.config import settings
+    from sqlalchemy import delete
+
+    async with SessionLocal() as s:
+        await s.execute(delete(Staff))
+        await s.commit()
+    saved = (settings.manager_tg_user_id, settings.manager_name)
+    settings.manager_tg_user_id, settings.manager_name = 0, "Бекзод"
+    try:
+        boss, pw = await run_mod.ensure_manager()
+        check("руководитель создан без Telegram ID", boss is not None and boss.is_manager and boss.tg_user_id < 0)
+        check("логин и пароль выданы", boss.login == "bekzod" and len(pw) == 14, f"{boss.login} {pw}")
+        boss2, pw2 = await run_mod.ensure_manager()
+        check("повторный запуск пароль не меняет", boss2.id == boss.id and pw2 == "")
+    finally:
+        settings.manager_tg_user_id, settings.manager_name = saved
+
+    print()
+    print("=" * 62)
     print(f"ИТОГ: {passed} пройдено, {failed} провалено")
     sys.exit(1 if failed else 0)
 

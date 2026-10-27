@@ -18,6 +18,35 @@ export interface StaffManage {
   is_manager: boolean;
   wip_limit: number;
   active: boolean;
+  login: string | null;
+  has_password: boolean;
+  /** false — Telegram ID не указан (стоит заглушка). */
+  tg_linked: boolean;
+  /** Только в ответе на создание: пароль показывается один раз. */
+  password?: string;
+}
+
+export interface ChatRow {
+  id: number;
+  title: string;
+  kind: "support" | "team" | "dev" | "sales" | "private" | "other";
+  enabled: boolean;
+  consent_note: string;
+  needs_consent: boolean;
+  hotel_id: number | null;
+  hotel: string;
+  messages: number;
+  last_message_at: string | null;
+}
+
+export interface ChatsFull {
+  chats: ChatRow[];
+  hotels: string[];
+  /** Telethon подключён в этом же процессе — можно обновлять с сайта. */
+  live: boolean;
+  syncing: boolean;
+  history: string;
+  history_done: string;
 }
 
 export interface TaskRow {

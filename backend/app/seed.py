@@ -209,10 +209,12 @@ async def main(demo: bool, quiet: bool = False) -> None:
                 print(f"[+] руководитель добавлен: {manager.name}")
             else:
                 manager.is_manager = True
-        else:
+        elif not quiet:
+            # Без Telegram ID руководителя заводит python -m app.run: вход на
+            # сайт — по логину и паролю, ID нужен только для мини-аппа.
             print(
-                "[!] MANAGER_TG_USER_ID не задан — войти в мини-апп будет некому.\n"
-                "    Узнать свой ID: запустите бота и напишите ему /id."
+                "[i] MANAGER_TG_USER_ID не задан. Руководителя с логином и паролем для сайта\n"
+                "    создаст python -m app.run."
             )
 
         for code, title, desc, enabled in RULES:

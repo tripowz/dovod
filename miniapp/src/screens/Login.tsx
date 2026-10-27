@@ -11,7 +11,7 @@ import { Button } from "../components/ui";
  * Код, а не «подтвердите в боте»: так чужая ссылка на вход, присланная
  * сотруднику, никому не открывает доступ под его именем.
  */
-export default function Login({ onDone }: { onDone: (me: Me) => void }) {
+function TelegramLogin({ onDone, onBack }: { onDone: (me: Me) => void; onBack: () => void }) {
   const [start, setStart] = useState<{ nonce: string; url: string; bot: string } | null>(null);
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -137,8 +137,105 @@ export default function Login({ onDone }: { onDone: (me: Me) => void }) {
             </p>
           )}
         </div>
+        <button onClick={onBack} className="tap mx-auto mt-4 block text-[14px] text-link">
+          Войти по логину и паролю
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Вход по логину и паролю — основной. Код через бота — если бот подключён. */
+export default function Login({ onDone }: { onDone: (me: Me) => void }) {
+  const [mode, setMode] = useState<"password" | "telegram">("password");
+  const [hasBot, setHasBot] = useState(false);
+  const [login, setLogin] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api
+      .get<{ telegram: boolean }>("/auth/methods")
+      .then((m) => setHasBot(m.telegram))
+      .catch(() => undefined);
+  }, []);
+
+  if (mode === "telegram") return <TelegramLogin onDone={onDone} onBack={() => setMode("password")} />;
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post<Me>("/auth/login", { login: login.trim(), password });
+      onDone(await api.get<Me>("/me"));
+    } catch (err) {
+      setError((err as ApiError).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-surface px-4 py-10 text-ink">
+      <div className="w-full max-w-[380px]">
+        <div className="mx-auto mb-5 grid h-[72px] w-[72px] place-items-center rounded-[20px] bg-accent text-[34px] shadow-[0_8px_24px_rgba(0,122,255,0.28)]">
+          🎯
+        </div>
+        <h1 className="m-0 text-center text-[28px] font-bold tracking-[-0.02em]">Довод</h1>
+        <p className="mx-auto mb-7 mt-1 max-w-[300px] text-center text-[15px] leading-snug text-muted">
+          Задачи, заявки отелей и клиенты команды SmartBooking
+        </p>
+
+        <form onSubmit={(e) => void submit(e)} className="overflow-hidden rounded-[14px] bg-bg">
+          <label className="flex items-center gap-3 px-4 py-3">
+            <span className="w-[72px] shrink-0 text-[16px]">Логин</span>
+            <input
+              value={login}
+              onChange={(e) => setLogin(e.target.value)}
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
+              placeholder="bekzod"
+              aria-label="Логин"
+              className="min-w-0 flex-1 bg-transparent text-[16px] outline-none placeholder:text-muted"
+            />
+          </label>
+          <div className="ml-4 h-[0.5px] bg-sep" />
+          <label className="flex items-center gap-3 px-4 py-3">
+            <span className="w-[72px] shrink-0 text-[16px]">Пароль</span>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+              placeholder="••••-••••-••••"
+              aria-label="Пароль"
+              className="min-w-0 flex-1 bg-transparent text-[16px] outline-none placeholder:text-muted"
+            />
+          </label>
+          <div className="px-4 pb-4 pt-1">
+            <Button
+              className="w-full !py-3 !text-[17px]"
+              disabled={busy || !login.trim() || !password}
+            >
+              {busy ? "Вхожу…" : "Войти"}
+            </Button>
+          </div>
+        </form>
+        {error && (
+          <p role="alert" className="m-0 mt-3 text-center text-[14px] leading-snug text-clay">
+            {error}
+          </p>
+        )}
+        {hasBot && (
+          <button onClick={() => setMode("telegram")} className="tap mx-auto mt-4 block text-[14px] text-link">
+            Войти через Telegram
+          </button>
+        )}
         <p className="mx-4 mt-4 text-center text-[12.5px] leading-snug text-muted">
-          Войти могут только сотрудники, которых руководитель добавил в «Команду».
+          Логин и пароль выдаёт руководитель в разделе «Команда».
         </p>
       </div>
     </div>

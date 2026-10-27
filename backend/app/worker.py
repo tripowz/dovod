@@ -404,6 +404,11 @@ async def learn_from_closed_tasks() -> int:
 
 # Telegram ID аккаунта, которым читаются чаты: его сообщения — ответы клиенту.
 SELF_ID: dict[str, int] = {}
+# Подключённый Telethon — для сайта, когда всё запущено одним процессом
+# (python -m app.run): «Обновить сейчас» и загрузка истории идут через него.
+LIVE: dict[str, object] = {}
+# Что сейчас идёт в фоне по кнопке с сайта.
+BUSY: dict[str, object] = {}
 
 
 async def cycle(client) -> None:
@@ -465,6 +470,7 @@ async def start() -> AsyncIOScheduler:
             client = None
         else:
             SELF_ID["id"] = (await client.get_me()).id
+            LIVE["client"] = client
     else:
         log.warning(
             "Telethon не настроен или нет сессии — чтение чатов выключено. "
@@ -473,7 +479,7 @@ async def start() -> AsyncIOScheduler:
     if not settings.anthropic_api_key:
         log.warning("ANTHROPIC_API_KEY не задан — сообщения копятся без разбора")
     if not settings.bot_token:
-        log.warning("BOT_TOKEN не задан — сводка и эскалации не отправляются")
+        log.info("BOT_TOKEN не задан — сводка и эскалации только на сайте")
 
     tz = ZoneInfo(settings.timezone)
     sched = AsyncIOScheduler(timezone=tz)
@@ -481,6 +487,12 @@ async def start() -> AsyncIOScheduler:
         cycle, "interval", args=[client], minutes=settings.analyze_interval_minutes,
         next_run_time=datetime.now(tz), max_instances=1, coalesce=True,
     )
+    if not settings.bot_token:
+        # Без бота доставлять некуда: то же самое видно на сайте — «Отчёт»,
+        # «Горит прямо сейчас». Расписание отправок просто не ставим.
+        sched.start()
+        log.info("воркер запущен (без бота: сводка и эскалации — только на сайте)")
+        return sched
     sched.add_job(check_escalations, "interval", minutes=5, max_instances=1, coalesce=True)
     sched.add_job(send_morning_digest, "cron", hour=settings.digest_hour_local, minute=0, max_instances=1)
     # Недельный отчёт по сотрудникам: раз в неделю в заданный день и час.

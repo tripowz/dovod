@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     manager_name: str = "Руководитель"
     # Имя бота для ссылки входа на сайт. Пусто — спросим у Telegram (getMe).
     bot_username: str = ""
+    # Ключ подписи сессий сайта. Пусто — создаётся один раз в data/web.secret.
+    session_secret: str = ""
+    session_secret_path: str = "./data/web.secret"
 
     # --- Telegram: чтение (MTProto user-API) ---
     telegram_api_id: int = 0
