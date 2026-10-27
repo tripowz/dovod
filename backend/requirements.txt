@@ -4,7 +4,8 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 pydantic>=2.9.0
 pydantic-settings>=2.6.0
-SQLAlchemy>=2.0.36
+# [asyncio] тянет greenlet: с SQLAlchemy 2.1 он сам не ставится, а без него база не работает.
+SQLAlchemy[asyncio]>=2.0.36
 aiosqlite>=0.20.0
 asyncpg>=0.30.0
 Telethon>=1.38.0

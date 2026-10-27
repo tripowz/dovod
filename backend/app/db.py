@@ -40,6 +40,26 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_add_missing_columns)
+        if conn.dialect.name == "postgresql":
+            await conn.run_sync(_lock_public_api)
+
+
+def _lock_public_api(conn) -> None:
+    """Включает RLS на всех таблицах схемы public.
+
+    Supabase сам публикует таблицы через REST API, и без RLS любой с
+    публичным ключом проекта прочитал бы переписку с клиентами. Политик нет
+    намеренно: API не отдаёт ничего, а бэкенд подключается владельцем
+    таблиц, и на него RLS не действует. На обычном Postgres это безвредно.
+    """
+    for (name,) in conn.execute(
+        text(
+            "select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace "
+            "where n.nspname = 'public' and c.relkind = 'r' and not c.relrowsecurity"
+        )
+    ):
+        conn.execute(text(f'alter table public."{name}" enable row level security'))
+        logging.getLogger("dovod.db").info("RLS включён: %s", name)
 
 
 def _add_missing_columns(conn) -> None:

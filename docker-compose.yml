@@ -1,0 +1,45 @@
+# Запуск на сервере: см. DEPLOY.md.
+#
+#   docker compose up -d --build            — без домена (туннель cloudflared)
+#   docker compose --profile https up -d    — с доменом: HTTPS через Caddy
+services:
+  dovod:
+    build: .
+    image: dovod:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      API_HOST: 0.0.0.0
+      API_PORT: "8010"
+      # Пути закреплены за папкой ./data: DATABASE_URL из локального .env
+      # (./dovod.db) положил бы базу внутрь контейнера, и она пропала бы при
+      # пересборке. Для Supabase — SERVER_DATABASE_URL в .env (см. DEPLOY.md).
+      DATABASE_URL: ${SERVER_DATABASE_URL:-sqlite+aiosqlite:///./data/dovod.db}
+      TELEGRAM_SESSION_PATH: ./data/dovod.session
+    volumes:
+      - ./data:/app/backend/data
+    # Наружу только для Caddy на этой же машине; напрямую из интернета не видно.
+    ports:
+      - "127.0.0.1:8010:8010"
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  caddy:
+    image: caddy:2
+    profiles: ["https"]
+    restart: unless-stopped
+    depends_on: [dovod]
+    environment:
+      DOMAIN: ${DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:
