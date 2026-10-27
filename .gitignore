@@ -11,3 +11,6 @@ node_modules/
 dist/
 .DS_Store
 tsconfig.tsbuildinfo
+
+# Таблица привязки чатов к отелям: названия клиентов, в репозиторий не кладём
+hotels*.csv

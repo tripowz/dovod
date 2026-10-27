@@ -183,9 +183,15 @@ class Chat(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     consent_note: Mapped[str] = mapped_column(Text, default="")
     last_seen_msg_id: Mapped[int] = mapped_column(Integer, default=0)
+    # Чей это чат: переписка с отелем наполняет его карточку клиента.
+    # Пусто — внутренний чат команды или ещё не разобран.
+    hotel_id: Mapped[int | None] = mapped_column(
+        ForeignKey("hotels.id"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     messages: Mapped[list[Message]] = relationship(back_populates="chat")
+    hotel: Mapped[Hotel | None] = relationship()
 
 
 class Message(Base):

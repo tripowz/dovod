@@ -228,6 +228,8 @@ class HotelEconomics:
 
     @property
     def verdict(self) -> str:
+        if self.mrr == 0 and self.cost == 0:
+            return "Тариф и часы обслуживания не указаны — экономику не посчитать."
         # Пробел как разделитель тысяч ставится только в числе. Раньше замена
         # запятых шла по всей строке и съедала пунктуацию в самом выводе.
         if self.margin > 0:
@@ -245,6 +247,89 @@ def _sum(n: int) -> str:
 def hotel_economics(hotel: Hotel) -> HotelEconomics:
     cost = int(hotel.service_hours * settings.service_hour_cost)
     return HotelEconomics(mrr=hotel.mrr, cost=cost, margin=hotel.mrr - cost)
+
+
+@dataclass
+class HotelActivity:
+    """Что видно по переписке с отелем за период."""
+
+    chats: list[str] = field(default_factory=list)
+    messages: int = 0
+    requests: int = 0  # сообщений, которые разбор счёл запросом
+    by_type: dict[str, int] = field(default_factory=dict)
+    by_module: dict[str, int] = field(default_factory=dict)
+    last_message_at: datetime | None = None
+
+
+TYPE_WORDS = {
+    "bug": ("баг", "бага", "багов"),
+    "problem": ("проблема", "проблемы", "проблем"),
+    "request": ("просьба", "просьбы", "просьб"),
+    "question": ("вопрос", "вопроса", "вопросов"),
+}
+
+
+def _plural(n: int, forms: tuple[str, str, str]) -> str:
+    a, b = n % 10, n % 100
+    if a == 1 and b != 11:
+        return forms[0]
+    if 2 <= a <= 4 and not 10 <= b < 20:
+        return forms[1]
+    return forms[2]
+
+
+def activity_signals(a: HotelActivity, now: datetime, days: int) -> list[str]:
+    """Сигналы для карточки клиента — из переписки, а не со слов менеджера."""
+    if not a.chats:
+        return []
+    out: list[str] = []
+    if a.requests:
+        parts = [
+            f"{n} {_plural(n, TYPE_WORDS[k])}"
+            for k, n in sorted(a.by_type.items(), key=lambda kv: -kv[1])
+            if k in TYPE_WORDS and n
+        ]
+        out.append(
+            f"За {days} дн. {a.requests} {_plural(a.requests, ('обращение', 'обращения', 'обращений'))}"
+            + (f": {', '.join(parts)}" if parts else "")
+        )
+        if a.by_module:
+            mod, n = max(a.by_module.items(), key=lambda kv: kv[1])
+            if n >= 3 and n * 2 >= a.requests and mod != "UNKNOWN":
+                out.append(f"Чаще всего про {mod}: {n} из {a.requests}")
+    elif a.messages:
+        out.append(f"За {days} дн. {a.messages} сообщений, запросов среди них нет")
+    if a.last_message_at is not None:
+        silent = (now - a.last_message_at).days
+        if silent >= 14:
+            out.append(f"Молчит {silent} дн. — последнее сообщение {a.last_message_at:%d.%m}")
+    else:
+        out.append("В подключённых чатах пока нет сообщений")
+    return out
+
+
+RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
+
+
+def live_risk(stored: str, a: HotelActivity | None, unanswered: int, now: datetime) -> str:
+    """Риск по факту: не ниже записанного вручную, но поднимается данными.
+
+    Вручную поставленный «высокий» остаётся высоким. А отель, который пишет
+    о багах каждые два дня или которому не ответили, поднимается сам — даже
+    если в карточку никто не заглядывал.
+    """
+    level = RISK_ORDER.get(stored, 0)
+    if unanswered:
+        level = max(level, 2)
+    if a is not None and a.chats:
+        bugs = a.by_type.get("bug", 0) + a.by_type.get("problem", 0)
+        if bugs >= 5:
+            level = max(level, 2)
+        elif bugs >= 3 or a.requests >= 8:
+            level = max(level, 1)
+        if a.last_message_at is not None and (now - a.last_message_at).days >= 21:
+            level = max(level, 1)
+    return {v: k for k, v in RISK_ORDER.items()}[level]
 
 
 # --------------------------------------------------------------------------
@@ -297,7 +382,12 @@ class Digest:
 
 
 def build_digest(
-    tasks: list[Task], tickets: list[Ticket], hotels: list[Hotel], me: Staff, now: datetime
+    tasks: list[Task],
+    tickets: list[Ticket],
+    hotels: list[Hotel],
+    me: Staff,
+    now: datetime,
+    activity: dict[int, HotelActivity] | None = None,
 ) -> Digest:
     """Собирает сводку по текущему состоянию, а не по вчерашнему отчёту."""
     d = Digest()
@@ -356,26 +446,32 @@ def build_digest(
 
     d.load = sorted(by_person.values(), key=lambda w: (-w.overdue * 10 - w.open))
 
+    activity = activity or {}
     for h in hotels:
-        if h.risk.value == "low":
-            continue
         unanswered = sum(
             1 for t in tickets if t.hotel_id == h.id and awaiting_client_reply(t)
         )
+        act = activity.get(h.id)
+        risk = live_risk(h.risk.value, act, unanswered, now)
+        if risk == "low":
+            continue
+        signals = activity_signals(act, now, 30) if act else []
         open_tasks = sum(1 for t in tasks if t.hotel_id == h.id and t.is_open)
         econ = hotel_economics(h)
         d.at_risk.append(
             {
                 "name": h.name,
-                "risk": h.risk.value,
+                "risk": risk,
                 "mrr": h.mrr,
                 "unanswered": unanswered,
                 "open_tasks": open_tasks,
                 "margin": econ.margin,
-                "signal": (h.signals or [""])[0],
+                "signal": (signals + (h.signals or []) + [""])[0],
             }
         )
-    d.at_risk.sort(key=lambda x: (-x["unanswered"], x["margin"]))
+    d.at_risk.sort(key=lambda x: (-x["unanswered"], -RISK_ORDER[x["risk"]], x["margin"]))
+    # Сводка — про тех, с кем говорить сегодня, а не каталог всех отелей.
+    d.at_risk = d.at_risk[:10]
     return d
 
 

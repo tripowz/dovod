@@ -154,6 +154,11 @@ export interface HotelRow {
   offers: { h: string; p: string; c: string }[];
   open_tasks: number;
   unanswered: number;
+  /** Чаты, связанные с отелем: из их переписки считаются цифры ниже. */
+  chats: string[];
+  messages_30d: number;
+  requests_30d: number;
+  last_message_at: string | null;
 }
 
 export interface FireItem {

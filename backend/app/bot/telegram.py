@@ -20,6 +20,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from .. import hotels as hotel_links
 from .. import service
 from ..config import settings
 from ..db import SessionLocal, init_db
@@ -115,7 +116,8 @@ async def compose_digest(staff: Staff) -> str:
             await s.execute(select(Ticket).options(selectinload(Ticket.hotel)))
         ).scalars().all()
         hotels = (await s.execute(select(Hotel))).scalars().all()
-    d = service.build_digest(list(tasks), list(tickets), list(hotels), staff, _now())
+        act = await hotel_links.activity(s, _now())
+    d = service.build_digest(list(tasks), list(tickets), list(hotels), staff, _now(), act)
     return service.digest_text(d).replace("*", "")
 
 

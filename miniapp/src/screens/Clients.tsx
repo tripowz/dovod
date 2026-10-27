@@ -22,6 +22,15 @@ const RISK: Record<string, { label: string; cls: string }> = {
   low: { label: "всё ровно", cls: "bg-moss/12 text-moss" },
 };
 
+/** «сегодня», «вчера», «5 дн. назад» — по дате последнего сообщения. */
+function lastSeen(at: string | null): string {
+  if (!at) return "—";
+  const days = Math.floor((Date.now() - new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(at) ? at : at + "Z").getTime()) / 86_400_000);
+  if (days <= 0) return "сегодня";
+  if (days === 1) return "вчера";
+  return `${days} дн. назад`;
+}
+
 export default function Clients({
   guard,
 }: {
@@ -52,13 +61,43 @@ export default function Clients({
         </div>
 
         <h2 className="m-0 mt-2 text-[22px] font-bold tracking-[-0.01em]">{open.name}</h2>
-        <div className="mt-0.5 text-[14px] text-muted">
-          {open.city} · {open.tariff}
-        </div>
+        {(open.city || open.tariff) && (
+          <div className="mt-0.5 text-[14px] text-muted">
+            {[open.city, open.tariff].filter(Boolean).join(" · ")}
+          </div>
+        )}
+
+        {open.chats.length > 0 && (
+          <>
+            <SectionHead title="Переписка за 30 дней" />
+            <div className="grid grid-cols-3 gap-2.5">
+              <Card>
+                <div className="text-[24px] font-bold leading-none tabular-nums">{open.requests_30d}</div>
+                <div className="mt-1 text-[12px] leading-snug text-muted">обращений</div>
+              </Card>
+              <Card>
+                <div className="text-[24px] font-bold leading-none tabular-nums">{open.messages_30d}</div>
+                <div className="mt-1 text-[12px] leading-snug text-muted">сообщений</div>
+              </Card>
+              <Card>
+                <div className="whitespace-nowrap text-[15px] font-bold leading-[24px]">{lastSeen(open.last_message_at)}</div>
+                <div className="mt-1 text-[12px] leading-snug text-muted">последнее</div>
+              </Card>
+            </div>
+          </>
+        )}
 
         {/* Экономика — это то, что превращает «клиент в риске» в решение.
             «Registon в риске» и «Registon в риске, 1 800 000 в месяц» —
             разные разговоры. */}
+        {open.mrr === 0 && open.cost === 0 ? (
+          <Note>
+            Тариф не указан — экономику не посчитать. Заполнить:{" "}
+            <span className="font-mono">
+              python -m app.hotels set "{open.name}" mrr=… tariff=…
+            </span>
+          </Note>
+        ) : (
         <div>
           <SectionHead title="Сколько платит, сколько стоит" />
           <div className="grid grid-cols-2 gap-2.5">
@@ -81,6 +120,7 @@ export default function Clients({
             {open.verdict}
           </div>
         </div>
+        )}
 
         <div className="mt-2.5 grid grid-cols-2 gap-2.5">
           <Card>
@@ -109,6 +149,19 @@ export default function Clients({
                     <i className="mt-[7px] block h-1.5 w-1.5 shrink-0 rounded-full bg-clay" />
                     {s}
                   </div>
+                </Row>
+              ))}
+            </Group>
+          </div>
+        )}
+
+        {open.chats.length > 0 && (
+          <div>
+            <SectionHead title="Чаты" right={open.chats.length} />
+            <Group>
+              {open.chats.map((c) => (
+                <Row key={c}>
+                  <span className="text-[15px]">{c}</span>
                 </Row>
               ))}
             </Group>
@@ -174,14 +227,17 @@ export default function Clients({
             >
               <div className="flex items-baseline gap-2">
                 <p className="m-0 min-w-0 flex-1 truncate text-[16px] font-semibold">{h.name}</p>
-                <span className="shrink-0 text-[13px] tabular-nums text-muted">
-                  {money(h.mrr)} сум/мес
-                </span>
+                {h.mrr > 0 && (
+                  <span className="shrink-0 text-[13px] tabular-nums text-muted">
+                    {money(h.mrr)} сум/мес
+                  </span>
+                )}
               </div>
               <div className="mt-0.5 flex items-center gap-1.5 text-[13px] text-muted">
                 <Tag className={r.cls}>{r.label}</Tag>
                 <span className="truncate">
-                  {h.city} · {h.tariff}
+                  {[h.city, h.tariff].filter(Boolean).join(" · ") ||
+                    (h.chats.length ? `${h.requests_30d} обращ. за 30 дн.` : "чаты не привязаны")}
                 </span>
               </div>
               {h.signals[0] && (

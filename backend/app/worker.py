@@ -244,10 +244,13 @@ async def create_tickets_from_chat() -> int:
             except ValueError:
                 mod = Module.unknown
             contact = contacts.get(m.tg_user_id)
+            # Отель — по автору, а если автор неизвестен — по чату: в чате
+            # «X & Smartbooking» пишет X, кто бы это ни был.
+            chat_hotel = (await s.get(Chat, m.chat_id)).hotel_id
             s.add(
                 Ticket(
                     ref=f"T-{100 + base + i}",
-                    hotel_id=contact.hotel_id if contact else None,
+                    hotel_id=contact.hotel_id if contact else chat_hotel,
                     message_id=m.id,
                     author_name=m.author_name or (contact.name if contact else ""),
                     author_role=contact.role if contact else "",

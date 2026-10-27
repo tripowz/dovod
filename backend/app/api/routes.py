@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from .. import hotels as hotel_links
 from .. import service
 from ..auth import current_manager, current_staff
 from ..config import settings
@@ -876,34 +877,42 @@ async def list_hotels(
     hotels = (await session.execute(select(Hotel))).scalars().all()
     tasks = (await session.execute(select(Task))).scalars().all()
     tickets = (await session.execute(select(Ticket))).scalars().all()
+    act = await hotel_links.activity(session, ts, days=30)
 
     order = {"high": 0, "medium": 1, "low": 2}
     out = []
     for h in hotels:
         econ = service.hotel_economics(h)
+        a = act.get(h.id)
+        unanswered = sum(
+            1 for t in tickets if t.hotel_id == h.id and service.awaiting_client_reply(t)
+        )
         out.append({
             "id": h.id,
             "name": h.name,
             "city": h.city,
             "rooms": h.rooms,
             "tariff": h.tariff,
-            "risk": h.risk.value,
+            # Риск по факту переписки, но не ниже выставленного вручную.
+            "risk": service.live_risk(h.risk.value, a, unanswered, ts),
             "mrr": h.mrr,
             "cost": econ.cost,
             "margin": econ.margin,
             "verdict": econ.verdict,
             "payment_note": h.payment_note,
-            "signals": h.signals or [],
+            # Сначала то, что видно по переписке, потом записанное вручную.
+            "signals": (service.activity_signals(a, ts, 30) if a else []) + (h.signals or []),
             "offers": h.offers or [],
+            "chats": a.chats if a else [],
+            "messages_30d": a.messages if a else 0,
+            "requests_30d": a.requests if a else 0,
+            "last_message_at": a.last_message_at if a else None,
             # Считается по текущим данным, а не хранится: иначе карточка
             # показывает вчерашнюю картину при сегодняшнем решении.
             "open_tasks": sum(1 for t in tasks if t.hotel_id == h.id and t.is_open),
-            "unanswered": sum(
-                1 for t in tickets
-                if t.hotel_id == h.id and service.awaiting_client_reply(t)
-            ),
+            "unanswered": unanswered,
         })
-    out.sort(key=lambda x: (order.get(x["risk"], 3), -x["mrr"]))
+    out.sort(key=lambda x: (order.get(x["risk"], 3), -x["mrr"], -x["requests_30d"]))
     return out
 
 
@@ -927,8 +936,9 @@ async def digest(
         await session.execute(select(Ticket).options(selectinload(Ticket.hotel)))
     ).scalars().all()
     hotels = (await session.execute(select(Hotel))).scalars().all()
+    act = await hotel_links.activity(session, ts)
 
-    d = service.build_digest(list(tasks), list(tickets), list(hotels), staff, ts)
+    d = service.build_digest(list(tasks), list(tickets), list(hotels), staff, ts, act)
     return {
         "fire": [f.__dict__ for f in d.fire],
         "load": [

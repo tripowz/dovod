@@ -8,6 +8,9 @@ SQLite для локальной работы, Postgres на сервере — 
 
 from __future__ import annotations
 
+import logging
+
+from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -36,6 +39,36 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_add_missing_columns)
+
+
+def _add_missing_columns(conn) -> None:
+    """Досоздаёт новые колонки в уже существующих таблицах.
+
+    `create_all` создаёт только недостающие таблицы: колонка, добавленная в
+    модель позже, в живой базе не появится, и первый же запрос упадёт. До
+    Alembic это закрывает самый частый случай — новое необязательное поле.
+    Внешний ключ при этом не создаётся: SQLite не умеет добавлять его
+    ALTER-ом, а для чтения данных он не нужен.
+    """
+    insp = inspect(conn)
+    log = logging.getLogger("dovod.db")
+    for table in Base.metadata.sorted_tables:
+        if not insp.has_table(table.name):
+            continue
+        have = {c["name"] for c in insp.get_columns(table.name)}
+        for col in table.columns:
+            if col.name in have:
+                continue
+            if not col.nullable and col.server_default is None:
+                log.error(
+                    "в таблице %s нет обязательной колонки %s — нужна миграция",
+                    table.name, col.name,
+                )
+                continue
+            ddl = col.type.compile(dialect=conn.dialect)
+            conn.execute(text(f'ALTER TABLE {table.name} ADD COLUMN "{col.name}" {ddl}'))
+            log.info("добавлена колонка %s.%s", table.name, col.name)
 
 
 async def get_session() -> AsyncSession:

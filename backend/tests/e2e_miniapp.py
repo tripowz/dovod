@@ -94,7 +94,7 @@ async def prepare() -> None:
 
     from app import seed
     from app.db import SessionLocal
-    from app.models import Chat, ChatKind, Message, Proposal, ProposalKind, ProposalState, Task
+    from app.models import Chat, ChatKind, Hotel, Message, Proposal, ProposalKind, ProposalState, Task
 
     await seed.main(demo=True)
     now = datetime.utcnow()
@@ -107,6 +107,19 @@ async def prepare() -> None:
                      analyzed_at=now, text="у Registon опять не подтягивается бронь с Ostrovok, они утром звонили")
         m2 = Message(chat_id=chat.id, tg_msg_id=2, author_name="Тимур", sent_at=now - timedelta(minutes=20),
                      analyzed_at=now, text="победил — был таймаут в очереди выгрузки, выкатил на прод")
+        registon = (await s.execute(select(Hotel).where(Hotel.name == "Hotel Registon"))).scalar_one()
+        hchat = Chat(tg_chat_id=-1002, title="Hotel Registon & Smartbooking", kind=ChatKind.support,
+                     enabled=True, hotel_id=registon.id)
+        s.add(hchat)
+        await s.flush()
+        for i in range(4):
+            hm = Message(chat_id=hchat.id, tg_msg_id=10 + i, author_name="Малика",
+                         sent_at=now - timedelta(days=2 + i * 5), analyzed_at=now,
+                         text=f"опять не пришла бронь с Ostrovok ({i + 1})")
+            s.add(hm)
+            await s.flush()
+            s.add(Proposal(message_id=hm.id, kind=ProposalKind.new_task, state=ProposalState.history,
+                           confidence=0.7, model="demo", draft={"type": "bug", "module": "CM"}))
         m3 = Message(chat_id=chat.id, tg_msg_id=3, author_name="Малика", sent_at=now - timedelta(days=12),
                      analyzed_at=now, text="можно ли выгружать отчёт по гостям в Excel?")
         s.add_all([m1, m2, m3])
@@ -263,6 +276,9 @@ def as_manager(browser, base: str) -> list[str]:
     page.get_by_role("button", name=re.compile("Hotel Registon")).first.click()
     check("экономика клиента с выводом", visible(page, re.compile("починить причину")))
     check("в выводе по клиенту целы запятые", visible(page, re.compile("в том, чтобы")))
+    check("карточка считает переписку", visible(page, "Переписка за 30 дней"))
+    check("сигнал из переписки", visible(page, re.compile("Чаще всего про CM: 4 из 4")))
+    check("связанный чат в карточке", visible(page, "Hotel Registon & Smartbooking"))
     shot(page, "06_manager_client")
     t = toast(page, lambda: page.get_by_role("button", name="В задачи", exact=True).first.click())
     check("предложение по удержанию стало задачей", "создана" in t, t)
