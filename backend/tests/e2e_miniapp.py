@@ -45,6 +45,7 @@ os.environ.update({
     "TELEGRAM_SESSION_PATH": str(_tmp / "s.session"),
     "ANTHROPIC_API_KEY": "",
     "MINIAPP_URL": "",
+    "BOT_USERNAME": "dovod_test_bot",
 })
 sys.path.insert(0, str(BACKEND))
 
@@ -318,6 +319,75 @@ def as_employee(browser, base: str) -> list[str]:
     return errors
 
 
+def as_web(browser, base: str) -> list[str]:
+    """Сайт в обычном браузере, без Telegram: вход кодом из бота."""
+    from urllib.parse import parse_qs, urlparse
+
+    from app.api.web_auth import START_PREFIX, issue_code
+    from app.models import Staff
+
+    ctx = browser.new_context(viewport={"width": 1280, "height": 860}, locale="ru-RU")
+    # Настоящий SDK вне Telegram не нужен — и в тестовой сети недоступен.
+    ctx.route("**/telegram-web-app.js", lambda route: route.fulfill(
+        status=200, content_type="application/javascript", body="/* вне Telegram */"))
+    ctx.route("https://t.me/**", lambda route: route.fulfill(status=200, body="telegram"))
+    page = ctx.new_page()
+    errors: list[str] = []
+    page.on("console", lambda m: errors.append(m.text) if m.type == "error" and "401" not in m.text else None)
+    page.goto(base)
+    check("в браузере — экран входа", visible(page, "Войти через Telegram"))
+    shot(page, "09_web_login")
+
+    with ctx.expect_page() as popup:
+        page.get_by_role("button", name="Войти через Telegram").click()
+    tg_tab = popup.value
+    try:
+        tg_tab.wait_for_url("https://t.me/**", timeout=8000)
+    except Exception:  # noqa: BLE001
+        pass
+    check("Telegram открыт в новой вкладке", tg_tab.url.startswith("https://t.me/dovod_test_bot?start=login_"), tg_tab.url)
+    tg_tab.close()
+    check("страница ждёт код", visible(page, "Введите код из сообщения бота"))
+
+    # Бот здесь не запущен — код выдаём так же, как выдал бы он.
+    href = page.get_by_role("link", name="Не открылся?").get_attribute("href") or ""
+    nonce = parse_qs(urlparse(href).query)["start"][0][len(START_PREFIX):]
+
+    async def code() -> str:
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        # Своё подключение: общее привязано к другому циклу событий.
+        engine = create_async_engine(os.environ["DATABASE_URL"])
+        try:
+            async with async_sessionmaker(engine, expire_on_commit=False)() as s:
+                boss = (await s.execute(select(Staff).where(Staff.tg_user_id == MANAGER_ID))).scalar_one()
+                return await issue_code(s, nonce, boss) or ""
+        finally:
+            await engine.dispose()
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(1) as pool:  # sync-Playwright уже держит цикл событий
+        c = pool.submit(asyncio.run, code()).result()
+    page.get_by_label("Код из Telegram").fill("000000" if c != "000000" else "111111")
+    check("неверный код — понятная ошибка", visible(page, re.compile("Код не подходит")))
+    page.get_by_label("Код из Telegram").fill(c)
+    check("верный код — вход", visible(page, "Отчёт", timeout=8000))
+    check("в браузере есть «Выйти»", page.get_by_role("button", name="Выйти").is_visible())
+    page.wait_for_load_state("networkidle")
+    shot(page, "10_web_report")
+    tab(page, "Клиенты")
+    check("сайт работает по cookie", visible(page, "Hotel Registon"))
+    page.reload()
+    page.wait_for_load_state("networkidle")
+    check("после перезагрузки вход сохранён", visible(page, "Сводка"))
+    page.get_by_role("button", name="Выйти").click()
+    check("выход возвращает к входу", visible(page, "Войти через Telegram"))
+    ctx.close()
+    return errors
+
+
 def main() -> None:
     asyncio.run(prepare())
     port = free_port()
@@ -330,6 +400,8 @@ def main() -> None:
             errors = as_manager(browser, base)
             print("=" * 62 + "\nСОТРУДНИК\n" + "=" * 62)
             errors += as_employee(browser, base)
+            print("=" * 62 + "\nСАЙТ В БРАУЗЕРЕ\n" + "=" * 62)
+            errors += as_web(browser, base)
             browser.close()
     finally:
         api.terminate()

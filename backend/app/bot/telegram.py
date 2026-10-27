@@ -168,6 +168,7 @@ async def handle_update(update: dict) -> None:
         return
 
     staff = await _staff_by_tg(tg_id)
+    login = text.startswith("/start login_")
     if staff is None or not staff.active:
         # Самый частый вопрос при подключении — «почему меня не пускает».
         # Отвечаем сразу тем, что нужно руководителю, чтобы добавить человека.
@@ -175,6 +176,24 @@ async def handle_update(update: dict) -> None:
             chat["id"],
             "Вас нет в списке сотрудников «Довода».\n"
             f"Передайте руководителю ваш Telegram ID: {tg_id}",
+        )
+        return
+
+    if login:
+        from ..api.web_auth import START_PREFIX, issue_code
+
+        nonce = text.split(maxsplit=1)[1][len(START_PREFIX):] if " " in text else ""
+        async with SessionLocal() as s:
+            code = await issue_code(s, nonce, staff)
+        if code is None:
+            await send(chat["id"], "Ссылка для входа устарела. Нажмите «Войти» на сайте ещё раз.")
+            return
+        await send(
+            chat["id"],
+            f"Код для входа в Довод: {code}\n\n"
+            "Введите его на сайте. Код действует 5 минут.\n"
+            "Никому его не сообщайте: с ним входят под вашим именем. "
+            "Если вы не нажимали «Войти» — просто проигнорируйте это сообщение.",
         )
         return
 

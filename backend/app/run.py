@@ -196,9 +196,9 @@ async def main() -> int:
     await bot.setup()
     await worker.start()
     print(
-        f"\nДовод запущен. Мини-апп: http://localhost:{settings.api_port}"
-        + (f" · {settings.miniapp_url}" if settings.miniapp_url else "")
-        + "\nОстановить: Ctrl+C\n"
+        f"\nДовод запущен.\n  Сайт в браузере: http://localhost:{settings.api_port}"
+        + (f"\n  Снаружи (и мини-апп в Telegram): {settings.miniapp_url}" if settings.miniapp_url else "")
+        + "\n  Вход на сайте — через Telegram, кодом от бота.\nОстановить: Ctrl+C\n"
     )
     try:
         await asyncio.gather(server.serve(), bot.run_polling())

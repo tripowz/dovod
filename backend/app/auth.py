@@ -1,4 +1,4 @@
-"""Вход в мини-апп: проверка подписи Telegram initData.
+"""Вход: подпись Telegram initData в мини-аппе или сессия в cookie на сайте.
 
 Telegram передаёт в WebApp строку `initData` с данными пользователя и
 HMAC-подписью. Это единственное доказательство того, кто открыл приложение,
@@ -25,7 +25,9 @@ import time
 from dataclasses import dataclass
 from urllib.parse import parse_qsl
 
-from fastapi import Depends, Header, HTTPException, status
+import base64
+
+from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -97,7 +99,52 @@ def verify_init_data(init_data: str, bot_token: str) -> TelegramUser:
     )
 
 
+# --------------------------------------------------------------------------
+# Вход через браузер: подписанная сессия в cookie
+# --------------------------------------------------------------------------
+
+SESSION_COOKIE = "dovod_session"
+SESSION_DAYS = 30
+# Заголовок, который браузер не отправит с чужого сайта без разрешения CORS.
+# Без него запрос, меняющий данные, по cookie не принимается: иначе любая
+# страница могла бы отправить форму от имени вошедшего сотрудника.
+CSRF_HEADER = "X-Dovod"
+
+
+def _session_key() -> bytes:
+    if not settings.bot_token:
+        raise ValueError("BOT_TOKEN не задан — подписать сессию нечем")
+    # Отдельный ключ, производный от токена: подпись сессии не совпадает ни с
+    # чем, что Telegram подписывает тем же токеном.
+    return hashlib.sha256(b"dovod-web-session:" + settings.bot_token.encode()).digest()
+
+
+def make_session(staff_id: int, now: float | None = None) -> str:
+    exp = int((time.time() if now is None else now) + SESSION_DAYS * 86400)
+    # Без «=» в конце: иначе значение cookie уходит в кавычках.
+    body = base64.urlsafe_b64encode(json.dumps({"sid": staff_id, "exp": exp}).encode()).decode().rstrip("=")
+    sig = hmac.new(_session_key(), body.encode(), hashlib.sha256).hexdigest()
+    return f"{body}.{sig}"
+
+
+def read_session(token: str, now: float | None = None) -> int:
+    """ID сотрудника из cookie. Бросает ValueError."""
+    body, _, sig = token.partition(".")
+    expected = hmac.new(_session_key(), body.encode(), hashlib.sha256).hexdigest()
+    if not body or not hmac.compare_digest(expected, sig):
+        raise ValueError("сессия не подписана")
+    try:
+        data = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+        sid, exp = int(data["sid"]), int(data["exp"])
+    except (ValueError, KeyError, TypeError):
+        raise ValueError("сессия повреждена") from None
+    if (time.time() if now is None else now) > exp:
+        raise ValueError("сессия истекла, войдите заново")
+    return sid
+
+
 async def current_staff(
+    request: Request,
     authorization: str = Header(default=""),
     x_init_data: str = Header(default="", alias="X-Telegram-Init-Data"),
     session: AsyncSession = Depends(get_session),
@@ -112,23 +159,35 @@ async def current_staff(
     raw = x_init_data or (
         authorization[len("tma ") :] if authorization.startswith("tma ") else ""
     )
-    if not raw:
+    cookie = request.cookies.get(SESSION_COOKIE, "")
+    if raw:
+        try:
+            tg = verify_init_data(raw, settings.bot_token)
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from None
+        staff = (
+            await session.execute(select(Staff).where(Staff.tg_user_id == tg.id))
+        ).scalar_one_or_none()
+        who = tg.display_name
+    elif cookie:
+        if request.method not in ("GET", "HEAD") and request.headers.get(CSRF_HEADER) != "1":
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "Запрос не с сайта Довода.")
+        try:
+            sid = read_session(cookie)
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from None
+        staff = await session.get(Staff, sid)
+        who = staff.name if staff else "Сотрудник"
+    else:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
-            "Нет данных Telegram. Откройте приложение из чата с ботом.",
+            "Войдите: через Telegram на сайте или откройте приложение из чата с ботом.",
         )
-    try:
-        tg = verify_init_data(raw, settings.bot_token)
-    except ValueError as exc:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from None
 
-    staff = (
-        await session.execute(select(Staff).where(Staff.tg_user_id == tg.id))
-    ).scalar_one_or_none()
     if staff is None or not staff.active:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
-            f"{tg.display_name}, вас нет в списке сотрудников. "
+            f"{who}, вас нет в списке сотрудников. "
             "Попросите руководителя добавить ваш Telegram.",
         )
     return staff

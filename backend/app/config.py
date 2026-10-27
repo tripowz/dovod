@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     # Публичный HTTPS-адрес мини-аппа. Telegram не откроет http и localhost.
     miniapp_url: str = ""
     manager_name: str = "Руководитель"
+    # Имя бота для ссылки входа на сайт. Пусто — спросим у Telegram (getMe).
+    bot_username: str = ""
 
     # --- Telegram: чтение (MTProto user-API) ---
     telegram_api_id: int = 0

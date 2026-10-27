@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { ApiError, api, haptic, initTelegram, notify, outsideTelegram, tg } from "./lib/tg";
+import { ApiError, alertUser, api, haptic, initTelegram, notify, outsideTelegram } from "./lib/tg";
+import Login from "./screens/Login";
 import { Loading, Segmented } from "./components/ui";
 import type { Me } from "./lib/types";
 import Inbox from "./screens/Inbox";
@@ -68,6 +69,9 @@ const TITLES: Record<Tab, [string, string]> = {
   team: ["Команда", "Доступ и роли сотрудников"],
 };
 
+/** Колонка контента: на телефоне — во всю ширину, в браузере — по центру. */
+const COLUMN = "mx-auto w-full max-w-[760px]";
+
 export default function App() {
   const [me, setMe] = useState<Me | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -76,24 +80,31 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("inbox");
   const [reportView, setReportView] = useState<ReportView>("digest");
   const [toast, setToast] = useState<string | null>(null);
+  // В браузере без сессии — экран входа через Telegram.
+  const [needLogin, setNeedLogin] = useState(false);
+
+  const enter = useCallback((u: Me) => {
+    setMe(u);
+    setNeedLogin(false);
+    if (u.is_manager) setTab("report");
+  }, []);
 
   useEffect(() => {
     initTelegram();
-    if (outsideTelegram) {
-      setError(
-        "Приложение открыто вне Telegram. Подписи нет, а без неё вход невозможен — " +
-          "откройте «Довод» из чата с ботом.",
-      );
-      return;
-    }
     api
       .get<Me>("/me")
-      .then((u) => {
-        setMe(u);
-        if (u.is_manager) setTab("report");
-      })
-      .catch((e: ApiError) => setError(e.message));
-  }, []);
+      .then(enter)
+      .catch((e: ApiError) => {
+        if (outsideTelegram && e.status === 401) setNeedLogin(true);
+        else setError(e.message);
+      });
+  }, [enter]);
+
+  const logout = async () => {
+    await api.post("/auth/logout").catch(() => undefined);
+    setMe(null);
+    setNeedLogin(true);
+  };
 
   const say = useCallback((message: string, ok = true) => {
     notify(ok ? "success" : "error");
@@ -113,7 +124,7 @@ export default function App() {
         const err = e as ApiError;
         if (err.isRule) {
           notify("warning");
-          tg?.showAlert(err.message);
+          alertUser(err.message);
         } else {
           say(err.message, false);
         }
@@ -121,6 +132,8 @@ export default function App() {
     },
     [say],
   );
+
+  if (needLogin) return <Login onDone={enter} />;
 
   if (error)
     return (
@@ -145,12 +158,23 @@ export default function App() {
 
   return (
     <div className="flex min-h-screen flex-col bg-surface text-ink">
-      <header className="px-4 pb-2 pt-4">
-        <h1 className="m-0 text-[32px] font-bold leading-tight tracking-[-0.02em]">{title}</h1>
-        <span className="block text-[14px] text-muted">{subtitle}</span>
+      <header className={`${COLUMN} flex items-start gap-3 px-4 pb-2 pt-4`}>
+        <div className="min-w-0 flex-1">
+          <h1 className="m-0 text-[32px] font-bold leading-tight tracking-[-0.02em]">{title}</h1>
+          <span className="block text-[14px] text-muted">{subtitle}</span>
+        </div>
+        {/* В Telegram выходить некуда — там вход по самому Telegram. */}
+        {outsideTelegram && (
+          <div className="flex shrink-0 items-center gap-2 pt-3 text-[14px]">
+            <span className="hidden text-muted sm:inline">{me.name}</span>
+            <button onClick={() => void logout()} className="tap text-link">
+              Выйти
+            </button>
+          </div>
+        )}
       </header>
 
-      <main className="flex-1 px-4 pb-[calc(84px+env(safe-area-inset-bottom))] pt-2">
+      <main className={`${COLUMN} flex-1 px-4 pb-[calc(84px+env(safe-area-inset-bottom))] pt-2`}>
         {tab === "inbox" && <Inbox guard={guard} />}
         {tab === "tasks" && <Tasks me={me} guard={guard} />}
         {tab === "tickets" && <Tickets guard={guard} />}
@@ -175,15 +199,16 @@ export default function App() {
       {toast && (
         <div
           role="status"
-          className="pointer-events-none fixed inset-x-4 bottom-[calc(76px+env(safe-area-inset-bottom))] z-40 rounded-[14px] bg-ink/90 px-4 py-3 text-[14px] leading-snug text-bg shadow-[0_8px_30px_rgba(0,0,0,0.18)] backdrop-blur">
+          className="pointer-events-none fixed bottom-[calc(76px+env(safe-area-inset-bottom))] left-1/2 z-40 w-[calc(100%-32px)] max-w-[728px] -translate-x-1/2 rounded-[14px] bg-ink/90 px-4 py-3 text-[14px] leading-snug text-bg shadow-[0_8px_30px_rgba(0,0,0,0.18)] backdrop-blur">
           {toast}
         </div>
       )}
 
-      <nav
-        style={{ gridTemplateColumns: `repeat(${visible.length}, minmax(0, 1fr))` }}
-        className="fixed inset-x-0 bottom-0 z-30 grid border-t-[0.5px] border-sep bg-bg/85 px-1 pb-[max(env(safe-area-inset-bottom),6px)] pt-1.5 backdrop-blur-xl backdrop-saturate-150"
-      >
+      <nav className="fixed inset-x-0 bottom-0 z-30 border-t-[0.5px] border-sep bg-bg/85 px-1 pb-[max(env(safe-area-inset-bottom),6px)] pt-1.5 backdrop-blur-xl backdrop-saturate-150">
+        <div
+          style={{ gridTemplateColumns: `repeat(${visible.length}, minmax(0, 1fr))` }}
+          className="mx-auto grid max-w-[760px]"
+        >
         {visible.map((t) => (
           <button
             key={t.key}
@@ -212,6 +237,7 @@ export default function App() {
             {t.label}
           </button>
         ))}
+        </div>
       </nav>
     </div>
   );

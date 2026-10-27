@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api.routes import router
+from .api.web_auth import router as web_auth_router
 from .config import PROJECT_ROOT, settings
 from .db import init_db
 
@@ -46,6 +47,7 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(web_auth_router)
 
 
 @app.get("/health")

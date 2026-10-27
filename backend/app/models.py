@@ -781,3 +781,23 @@ class AgentRun(Base):
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class LoginRequest(Base):
+    """Вход на сайт: ссылка в бота и одноразовый код.
+
+    Хранятся только хэши: строка в базе не даёт ни войти, ни угадать код.
+    Код приходит в Telegram владельцу аккаунта — поэтому чужая ссылка на
+    вход, присланная сотруднику, злоумышленнику ничего не даёт.
+    """
+
+    __tablename__ = "login_requests"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    nonce_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    code_hash: Mapped[str] = mapped_column(String(64), default="")
+    staff_id: Mapped[int | None] = mapped_column(ForeignKey("staff.id"), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    code_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -2,6 +2,20 @@
 @tailwind components;
 @tailwind utilities;
 
+/* В браузере темы Telegram нет — берём системную, цвета тёмной темы iOS.
+   В Telegram его переменные ставятся прямо на <html> и перекрывают эти. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --tg-theme-bg-color: #1c1c1e;
+    --tg-theme-secondary-bg-color: #000000;
+    --tg-theme-text-color: #ffffff;
+    --tg-theme-hint-color: #8e8e93;
+    --tg-theme-link-color: #0a84ff;
+    --tg-theme-button-color: #0a84ff;
+    --tg-theme-button-text-color: #ffffff;
+  }
+}
+
 /* Фон красит Telegram, но по умолчанию он прозрачный: без явной заливки
    приложение просвечивает чужой темой и текст становится нечитаемым. */
 html,

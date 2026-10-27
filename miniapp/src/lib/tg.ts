@@ -45,8 +45,14 @@ declare global {
 
 export const tg = window.Telegram?.WebApp;
 
-/** Приложение открыто вне Telegram — там нет подписи и работать нечему. */
+/** Открыто вне Telegram — в браузере. Вход тогда по cookie-сессии сайта. */
 export const outsideTelegram = !tg || !tg.initData;
+
+/** Сообщение пользователю: в Telegram — родным окном, в браузере — обычным. */
+export function alertUser(message: string): void {
+  if (!outsideTelegram && tg) tg.showAlert(message);
+  else window.alert(message);
+}
 
 export function initTelegram(): void {
   if (!tg) return;
@@ -79,9 +85,12 @@ export class ApiError extends Error {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`/api${path}`, {
     ...init,
+    // В браузере вход — cookie сессии; заголовок X-Dovod доказывает серверу,
+    // что запрос идёт со страницы самого Довода, а не с чужого сайта.
+    credentials: "same-origin",
     headers: {
       "Content-Type": "application/json",
-      "X-Telegram-Init-Data": tg?.initData ?? "",
+      ...(outsideTelegram ? { "X-Dovod": "1" } : { "X-Telegram-Init-Data": tg?.initData ?? "" }),
       ...(init.headers ?? {}),
     },
   });
