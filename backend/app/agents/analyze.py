@@ -404,13 +404,14 @@ async def apply_results(
             draft = {"dod_add": str(d["dod_add"])}
 
         linked = task is not None and kind in CONTINUATIONS
+        old = m.sent_at < now - timedelta(hours=settings.fresh_hours)
         _upsert(
             session,
             existing,
             m,
             dict(
                 kind=kind,
-                state=ProposalState.pending,
+                state=ProposalState.history if old else ProposalState.pending,
                 task_id=task.id if linked else None,
                 link_basis=basis if linked else "",
                 reading=reading,

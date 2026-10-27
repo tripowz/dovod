@@ -231,9 +231,39 @@ async def inbox(
             "orphan": bool(p.task_id and p.task is None),
         }
 
+    # Архив истории: только запросы — из них ещё может выйти задача. Продолжения
+    # из прошлого ссылались бы на задачи, которых тогда не было.
+    history_rows = (
+        await session.execute(
+            select(Proposal)
+            .options(selectinload(Proposal.message).selectinload(Message.chat))
+            .join(Message, Message.id == Proposal.message_id)
+            .where(Proposal.state == ProposalState.history)
+            .where(Proposal.kind == ProposalKind.new_task)
+            .where(Proposal.confidence >= settings.proposal_min_confidence)
+            .order_by(Message.sent_at.desc())
+            .limit(60)
+        )
+    ).scalars().all()
+    history_total = (
+        await session.execute(
+            select(func.count(Proposal.id))
+            .where(Proposal.state == ProposalState.history)
+            .where(Proposal.kind == ProposalKind.new_task)
+            .where(Proposal.confidence >= settings.proposal_min_confidence)
+        )
+    ).scalar() or 0
+
     new = [dump(p) for p in rows if p.kind == ProposalKind.new_task]
     upd = [dump(p) for p in rows if p.kind not in (ProposalKind.new_task, ProposalKind.noise)]
-    return {"new": new, "updates": upd, "scanned": scanned, "filtered": noise}
+    return {
+        "new": new,
+        "updates": upd,
+        "history": [dump(p) for p in history_rows],
+        "history_total": history_total,
+        "scanned": scanned,
+        "filtered": noise,
+    }
 
 
 @router.post("/proposals/{proposal_id}/reject")

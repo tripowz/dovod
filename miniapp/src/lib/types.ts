@@ -87,6 +87,9 @@ export interface Proposal {
 export interface Inbox {
   new: Proposal[];
   updates: Proposal[];
+  /** Запросы из догруженной истории: во «Входящие» не идут, лежат архивом. */
+  history: Proposal[];
+  history_total: number;
   scanned: number;
   filtered: number;
 }

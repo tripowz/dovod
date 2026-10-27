@@ -104,12 +104,18 @@ async def sync_dialogs(
         kind = classify(d)
         if kind is None or d.id in known:
             continue
+        # Первый проход регистрирует всё, что уже есть, выключенным — это
+        # решение руководителя. Автовключение касается только чатов, которые
+        # появились потом: новый отель написал в личку — читать его сразу.
+        auto = bool(settings.new_chats_consent) and bool(known)
         session.add(
             Chat(
                 tg_chat_id=d.id,
                 title=(d.name or f"чат {d.id}")[:255],
                 kind=kind,
-                enabled=False,
+                enabled=auto,
+                consent_note=settings.new_chats_consent if auto else "",
+                last_seen_msg_id=FROM_NOW if auto else 0,
             )
         )
         added += 1

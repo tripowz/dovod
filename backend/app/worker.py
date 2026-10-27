@@ -203,7 +203,11 @@ async def create_tickets_from_chat() -> int:
                 .join(Chat, Chat.id == Message.chat_id)
                 .join(Proposal, Proposal.message_id == Message.id)
                 .where(
-                    Chat.kind == ChatKind.support,
+                    Chat.kind.in_(
+                        [ChatKind.support, ChatKind.private]
+                        if settings.private_as_support
+                        else [ChatKind.support]
+                    ),
                     Chat.enabled.is_(True),
                     Proposal.kind == ProposalKind.new_task,
                     Proposal.state.in_([ProposalState.pending, ProposalState.applied]),
@@ -259,6 +263,62 @@ async def create_tickets_from_chat() -> int:
     if created:
         log.info("создано обращений из чата: %d", created)
     return created
+
+
+async def detect_replies(self_id: int | None) -> int:
+    """Отмечает ответ клиенту, если его дали прямо в Telegram.
+
+    Отвечают отелям в самом чате, а не кнопкой в мини-аппе. Без этого заявка
+    висела бы «без ответа», и через полчаса руководитель получал бы ложную
+    эскалацию о нарушенном обещании. Ответом считается первое сообщение в том
+    же чате после обращения — от сотрудника или от служебного аккаунта,
+    которым читаются чаты.
+    """
+    async with SessionLocal() as s:
+        staff = {
+            st.tg_user_id: st
+            for st in (await s.execute(select(Staff).where(Staff.active.is_(True)))).scalars()
+        }
+        ours = set(staff) | ({self_id} if self_id else set())
+        if not ours:
+            return 0
+        rows = (
+            await s.execute(
+                select(Ticket, Message)
+                .join(Message, Message.id == Ticket.message_id)
+                .where(
+                    Ticket.first_reply_at.is_(None),
+                    Ticket.status.notin_([TicketStatus.resolved, TicketStatus.closed]),
+                )
+            )
+        ).all()
+        marked = 0
+        for ticket, asked in rows:
+            reply = (
+                await s.execute(
+                    select(Message)
+                    .where(
+                        Message.chat_id == asked.chat_id,
+                        Message.sent_at > asked.sent_at,
+                        Message.tg_user_id.in_(ours),
+                    )
+                    .order_by(Message.sent_at)
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if reply is None:
+                continue
+            ticket.first_reply_at = reply.sent_at
+            who = staff.get(reply.tg_user_id)
+            if who is not None and ticket.assignee_id is None:
+                ticket.assignee_id = who.id
+            if ticket.status == TicketStatus.new:
+                ticket.status = TicketStatus.working
+            marked += 1
+        await s.commit()
+    if marked:
+        log.info("ответ клиенту найден в чате: %d заявок", marked)
+    return marked
 
 
 async def auto_diagnose() -> int:
@@ -339,6 +399,10 @@ async def learn_from_closed_tasks() -> int:
     return learned
 
 
+# Telegram ID аккаунта, которым читаются чаты: его сообщения — ответы клиенту.
+SELF_ID: dict[str, int] = {}
+
+
 async def cycle(client) -> None:
     if client is not None:
         try:
@@ -361,6 +425,10 @@ async def cycle(client) -> None:
     except Exception:
         log.exception("создание обращений из чата упало")
     try:
+        await detect_replies(SELF_ID.get("id"))
+    except Exception:
+        log.exception("поиск ответов клиенту упал")
+    try:
         await auto_diagnose()
     except Exception:
         log.exception("авто-диагноз упал")
@@ -374,7 +442,12 @@ async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     await init_db()
+    await start()
+    await asyncio.Event().wait()
 
+
+async def start() -> AsyncIOScheduler:
+    """Подключается к Telegram и запускает расписание. Не блокирует."""
     client = None
     if (
         settings.telegram_api_id
@@ -387,6 +460,8 @@ async def main() -> None:
             log.error("сессия Telethon не авторизована — выполните: python -m app.ingest.login")
             await client.disconnect()
             client = None
+        else:
+            SELF_ID["id"] = (await client.get_me()).id
     else:
         log.warning(
             "Telethon не настроен или нет сессии — чтение чатов выключено. "
@@ -416,7 +491,7 @@ async def main() -> None:
     )
     sched.start()
     log.info("воркер запущен")
-    await asyncio.Event().wait()
+    return sched
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@
                                                          — включить и личные
     python -m app.chats off all                          — выключить все
     python -m app.chats history 30                       — догрузить последние 30 дней
+    python -m app.chats kind support 15 6 117            — сменить тип чатов
 
 Массовое включение по умолчанию читает чаты с текущего момента: история
 сотен чатов разом встала бы в очередь разбора перед свежими обращениями
@@ -68,6 +69,8 @@ async def main(argv: list[str]) -> int:
 
         if argv[0] == "history":
             return await history(s, argv[1:])
+        if argv[0] == "kind":
+            return await set_kind(s, argv[1:])
         if argv[0] not in ("on", "off") or len(argv) < 2:
             print(__doc__)
             return 2
@@ -175,6 +178,51 @@ async def bulk(s, on: bool, history: bool, private: bool = False, consent: str =
         )
     print("Воркер подхватит изменения на следующем проходе (раз в 15 минут).")
     return 0
+
+
+KIND_BY_WORD = {
+    "support": ChatKind.support, "поддержка": ChatKind.support,
+    "team": ChatKind.team, "команда": ChatKind.team,
+    "dev": ChatKind.dev, "разработка": ChatKind.dev,
+    "sales": ChatKind.sales, "продажи": ChatKind.sales,
+    "other": ChatKind.other, "другое": ChatKind.other,
+}
+
+
+async def set_kind(s, args: list[str]) -> int:
+    """Тип групповых чатов. Заявки с SLA создаются только из «поддержки»."""
+    if len(args) < 2 or args[0].lower() not in KIND_BY_WORD:
+        print(
+            "Использование: python -m app.chats kind <тип> <№> [<№> ...]\n"
+            "Типы: support (поддержка), team, dev, sales, other.\n"
+            "Пример: python -m app.chats kind support 15 6 117"
+        )
+        return 2
+    kind = KIND_BY_WORD[args[0].lower()]
+    code = 0
+    for raw in args[1:]:
+        try:
+            chat = await s.get(Chat, int(raw))
+        except ValueError:
+            print(f"«{raw}» — не номер чата, пропущен.")
+            code = 1
+            continue
+        if chat is None:
+            print(f"Чата №{raw} нет, пропущен.")
+            code = 1
+            continue
+        # Тип «личная» держит правило согласия; сменой типа его не обойти.
+        if chat.kind == ChatKind.private:
+            print(
+                f"«{chat.title}» — личная переписка, её тип не меняется. Чтобы из "
+                "личных переписок создавались заявки, задайте в .env PRIVATE_AS_SUPPORT=true."
+            )
+            code = 1
+            continue
+        chat.kind = kind
+        print(f"«{chat.title}»: {KIND[kind]}")
+    await s.commit()
+    return code
 
 
 async def history(s, args: list[str]) -> int:

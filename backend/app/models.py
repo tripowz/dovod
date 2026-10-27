@@ -120,6 +120,10 @@ class ProposalState(str, enum.Enum):
     applied = "applied"
     rejected = "rejected"
     orphaned = "orphaned"  # задача, к которой оно относилось, исчезла
+    # Из догруженной истории: во «Входящие» не идёт, лежит в архиве. По
+    # старому сообщению давно ответили, а продолжения ссылались бы на задачи,
+    # которых тогда ещё не было.
+    history = "history"
 
 
 class NoteRole(str, enum.Enum):

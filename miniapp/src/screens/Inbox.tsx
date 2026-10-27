@@ -81,7 +81,7 @@ export default function Inbox({
   guard: (fn: () => Promise<string | void>) => Promise<void>;
 }) {
   const [data, setData] = useState<InboxData | null>(null);
-  const [seg, setSeg] = useState<"new" | "upd">("new");
+  const [seg, setSeg] = useState<"new" | "upd" | "hist">("new");
   const [form, setForm] = useState<Form | null>(null);
   const [staff, setStaff] = useState<StaffRow[]>([]);
 
@@ -236,7 +236,8 @@ export default function Inbox({
 
   if (!data) return <Loading />;
 
-  const list = seg === "new" ? data.new : data.updates;
+  const list = seg === "new" ? data.new : seg === "upd" ? data.updates : data.history;
+  const hasHistory = data.history_total > 0;
 
   return (
     <div>
@@ -244,8 +245,10 @@ export default function Inbox({
         value={seg}
         onChange={setSeg}
         options={[
-          { key: "new", label: <>Новые запросы <Badge n={data.new.length} /></> },
+          { key: "new", label: <>Новые <Badge n={data.new.length} /></> },
           { key: "upd", label: <>Продолжения <Badge n={data.updates.length} /></> },
+          // История без красного бейджа: это архив, а не то, что ждёт ответа.
+          ...(hasHistory ? [{ key: "hist" as const, label: "История" }] : []),
         ]}
       />
 
@@ -255,11 +258,23 @@ export default function Inbox({
         <b className="font-semibold text-ink/75">{data.filtered}</b> как разговоры.
       </p>
 
+      {seg === "hist" && (
+        <p className="mx-4 mb-3 mt-0 text-[13px] leading-snug text-muted">
+          Запросы из переписки старше суток — {data.history_total}
+          {data.history_total > data.history.length && `, показаны последние ${data.history.length}`}.
+          Скорее всего, по ним уже ответили. Если что-то так и не сделано — оформите задачу.
+        </p>
+      )}
+
       {list.length === 0 ? (
-        <Empty title={seg === "new" ? "Новых запросов нет" : "Продолжений нет"}>
+        <Empty
+          title={seg === "new" ? "Новых запросов нет" : seg === "upd" ? "Продолжений нет" : "История пуста"}
+        >
           {seg === "new"
             ? "Всё, что бот счёл задачей, уже оформлено или отклонено."
-            : "Всё, что бот услышал по текущим задачам, уже применено к карточкам."}
+            : seg === "upd"
+              ? "Всё, что бот услышал по текущим задачам, уже применено к карточкам."
+              : "Из догруженной истории не осталось запросов."}
         </Empty>
       ) : (
         <div className="flex flex-col gap-3">
@@ -330,9 +345,13 @@ export default function Inbox({
                 >
                   {p.orphan ? "Вернуть в новые запросы" : p.kind === "new_task" ? "В задачи" : "Применить"}
                 </Button>
-                <Button variant="ghost" onClick={() => void reject(p)}>
-                  Не то
-                </Button>
+                {/* «Не то» обучает бота на ошибке. По истории это не ошибка, а
+                    давно решённый вопрос — такой сигнал испортил бы разбор. */}
+                {seg !== "hist" && (
+                  <Button variant="ghost" onClick={() => void reject(p)}>
+                    Не то
+                  </Button>
+                )}
               </div>
             </Card>
           ))}

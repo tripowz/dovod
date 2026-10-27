@@ -25,13 +25,15 @@ from sqlalchemy import select  # noqa: E402
 
 from app import chats  # noqa: E402
 from app.db import SessionLocal, init_db  # noqa: E402
-from app.agents.analyze import analyze_pending  # noqa: E402
+from app.agents.analyze import analyze_pending, apply_results  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.ingest.reader import fetch_history, fetch_new  # noqa: E402
 from app.models import (  # noqa: E402
-    FROM_NOW, TELEGRAM_SERVICE_ID, Chat, ChatKind, Message, Proposal, ProposalKind, Ticket,
+    FROM_NOW, TELEGRAM_SERVICE_ID, Chat, ChatKind, Message, Proposal, ProposalKind,
+    ProposalState, Staff, Ticket, TicketStatus,
 )
-from app.worker import create_tickets_from_chat  # noqa: E402
+from app.ingest.reader import sync_dialogs  # noqa: E402
+from app.worker import create_tickets_from_chat, detect_replies  # noqa: E402
 
 passed = failed = 0
 
@@ -248,6 +250,117 @@ async def main() -> None:
         from_msgs = set((await s.execute(select(Ticket.message_id))).scalars())
     check("из старого сообщения заявка не создана", old_id not in from_msgs)
     check("из свежего — создана", new_id in from_msgs, f"{from_msgs}")
+
+    print()
+    print("=" * 62)
+    print("ИСТОРИЯ НЕ ИДЁТ ВО «ВХОДЯЩИЕ»")
+    print("=" * 62)
+    async with SessionLocal() as s:
+        h_old = Message(chat_id=21, tg_msg_id=400, text="добавьте выгрузку", sent_at=naive - timedelta(days=10))
+        h_new = Message(chat_id=21, tg_msg_id=401, text="добавьте выгрузку", sent_at=naive - timedelta(hours=1))
+        s.add_all([h_old, h_new])
+        await s.flush()
+        res = [
+            {"message_id": h_old.id, "kind": "new_task", "confidence": 0.9, "draft": {"title": "Выгрузка"}},
+            {"message_id": h_new.id, "kind": "new_task", "confidence": 0.9, "draft": {"title": "Выгрузка"}},
+        ]
+        await apply_results(s, [h_old, h_new], res, {}, "test", naive)
+        await s.commit()
+        states = {
+            p.message_id: p.state
+            for p in (await s.execute(select(Proposal).where(Proposal.message_id.in_([h_old.id, h_new.id])))).scalars()
+        }
+    check("старое — в архив истории", states.get(h_old.id) == ProposalState.history, f"{states}")
+    check("свежее — во «Входящие»", states.get(h_new.id) == ProposalState.pending, f"{states}")
+
+    print()
+    print("=" * 62)
+    print("ОТВЕТ КЛИЕНТУ ПРЯМО В TELEGRAM")
+    print("=" * 62)
+    async with SessionLocal() as s:
+        s.add(Staff(id=70, tg_user_id=7000, name="Азиза"))
+        q = Message(chat_id=21, tg_msg_id=500, tg_user_id=111, text="не пришла бронь", sent_at=naive - timedelta(minutes=20))
+        a = Message(chat_id=21, tg_msg_id=501, tg_user_id=7000, text="смотрю", sent_at=naive - timedelta(minutes=12))
+        q2 = Message(chat_id=21, tg_msg_id=502, tg_user_id=111, text="и ещё вопрос", sent_at=naive - timedelta(minutes=5))
+        s.add_all([q, a, q2])
+        await s.flush()
+        s.add_all([
+            Ticket(ref="T-900", message_id=q.id, text=q.text, status=TicketStatus.new, created_at=q.sent_at),
+            Ticket(ref="T-901", message_id=q2.id, text=q2.text, status=TicketStatus.new, created_at=q2.sent_at),
+        ])
+        await s.commit()
+    await detect_replies(self_id=None)
+    async with SessionLocal() as s:
+        t900 = (await s.execute(select(Ticket).where(Ticket.ref == "T-900"))).scalar_one()
+        t901 = (await s.execute(select(Ticket).where(Ticket.ref == "T-901"))).scalar_one()
+    check("ответ сотрудника в чате снял ожидание", t900.first_reply_at is not None)
+    check("ответивший стал исполнителем", t900.assignee_id == 70, f"{t900.assignee_id}")
+    check("заявка после ответа всё ещё ждёт", t901.first_reply_at is None)
+    async with SessionLocal() as s:
+        s.add(Message(chat_id=21, tg_msg_id=503, tg_user_id=9999, text="ответ с аккаунта", sent_at=naive - timedelta(minutes=1)))
+        await s.commit()
+    await detect_replies(self_id=9999)
+    async with SessionLocal() as s:
+        t901 = (await s.execute(select(Ticket).where(Ticket.ref == "T-901"))).scalar_one()
+    check("ответ со служебного аккаунта тоже считается", t901.first_reply_at is not None)
+
+    print()
+    print("=" * 62)
+    print("ЛИЧКА КАК ПОДДЕРЖКА, ТИП ЧАТА, НОВЫЕ ЧАТЫ")
+    print("=" * 62)
+    async with SessionLocal() as s:
+        s.add(Chat(id=31, tg_chat_id=301, title="Отель в личке", kind=ChatKind.private, enabled=True))
+        pm = Message(chat_id=31, tg_msg_id=1, text="не работает касса", sent_at=naive - timedelta(minutes=2))
+        s.add(pm)
+        await s.flush()
+        s.add(Proposal(message_id=pm.id, kind=ProposalKind.new_task, confidence=0.9, draft={"type": "bug"}))
+        await s.commit()
+        pm_id = pm.id
+    await create_tickets_from_chat()
+    async with SessionLocal() as s:
+        has = pm_id in set((await s.execute(select(Ticket.message_id))).scalars())
+    check("по умолчанию из лички заявки нет", not has)
+    settings.private_as_support = True
+    try:
+        await create_tickets_from_chat()
+    finally:
+        settings.private_as_support = False
+    async with SessionLocal() as s:
+        has = pm_id in set((await s.execute(select(Ticket.message_id))).scalars())
+    check("с PRIVATE_AS_SUPPORT из лички заявка есть", has)
+
+    code = await chats.main(["kind", "support", "2", "31"])
+    async with SessionLocal() as s:
+        c2, c31 = await s.get(Chat, 2), await s.get(Chat, 31)
+    check("kind меняет тип группы", c2.kind == ChatKind.support)
+    check("тип личной переписки не меняется", c31.kind == ChatKind.private and code == 1)
+
+    class Dialogs:
+        def __init__(self, ds):
+            self.ds = ds
+
+        async def iter_dialogs(self):
+            for d in self.ds:
+                yield d
+
+    def dlg(i, name):
+        from telethon.tl.types import Chat as TgChat
+        e = TgChat.__new__(TgChat)
+        return SimpleNamespace(id=i, name=name, entity=e, message=None)
+
+    settings.new_chats_consent = "служебный аккаунт"
+    try:
+        async with SessionLocal() as s:
+            await sync_dialogs(Dialogs([dlg(-777, "Новый отель & Smartbooking")]), s)
+            fresh_chat = (await s.execute(select(Chat).where(Chat.tg_chat_id == -777))).scalar_one()
+    finally:
+        settings.new_chats_consent = ""
+    check("новый чат включён сам", fresh_chat.enabled and fresh_chat.last_seen_msg_id == FROM_NOW)
+    check("с записью о согласии", fresh_chat.consent_note == "служебный аккаунт")
+    async with SessionLocal() as s:
+        await sync_dialogs(Dialogs([dlg(-778, "Ещё чат")]), s)
+        off_chat = (await s.execute(select(Chat).where(Chat.tg_chat_id == -778))).scalar_one()
+    check("без NEW_CHATS_CONSENT новый чат выключен", not off_chat.enabled)
 
     print()
     print("=" * 62)

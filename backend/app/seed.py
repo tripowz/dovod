@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -191,7 +190,7 @@ async def _demo(session, manager: Staff | None, now: datetime) -> None:
     print("[+] демо: 4 отеля, 3 сотрудника, 4 задачи, 1 заявка с разбором")
 
 
-async def main(demo: bool) -> None:
+async def main(demo: bool, quiet: bool = False) -> None:
     await init_db()
     now = _now()
     async with SessionLocal() as s:
@@ -203,7 +202,7 @@ async def main(demo: bool) -> None:
             if manager is None:
                 manager = Staff(
                     tg_user_id=settings.manager_tg_user_id,
-                    name=os.environ.get("MANAGER_NAME", "Руководитель"),
+                    name=settings.manager_name,
                     is_manager=True,
                 )
                 s.add(manager)
@@ -225,7 +224,8 @@ async def main(demo: bool) -> None:
         if demo:
             await _demo(s, manager, now)
         await s.commit()
-    print("готово")
+    if not quiet:
+        print("готово")
 
 
 if __name__ == "__main__":

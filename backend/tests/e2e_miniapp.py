@@ -94,7 +94,7 @@ async def prepare() -> None:
 
     from app import seed
     from app.db import SessionLocal
-    from app.models import Chat, ChatKind, Message, Proposal, ProposalKind, Task
+    from app.models import Chat, ChatKind, Message, Proposal, ProposalKind, ProposalState, Task
 
     await seed.main(demo=True)
     now = datetime.utcnow()
@@ -107,7 +107,9 @@ async def prepare() -> None:
                      analyzed_at=now, text="у Registon опять не подтягивается бронь с Ostrovok, они утром звонили")
         m2 = Message(chat_id=chat.id, tg_msg_id=2, author_name="Тимур", sent_at=now - timedelta(minutes=20),
                      analyzed_at=now, text="победил — был таймаут в очереди выгрузки, выкатил на прод")
-        s.add_all([m1, m2])
+        m3 = Message(chat_id=chat.id, tg_msg_id=3, author_name="Малика", sent_at=now - timedelta(days=12),
+                     analyzed_at=now, text="можно ли выгружать отчёт по гостям в Excel?")
+        s.add_all([m1, m2, m3])
         await s.flush()
         s.add_all([
             Proposal(message_id=m1.id, kind=ProposalKind.new_task, confidence=0.91, model="demo",
@@ -120,6 +122,10 @@ async def prepare() -> None:
                      confidence=0.9, model="demo",
                      reading="Исполнитель сообщает, что работа сделана, а задача всё ещё в работе.",
                      action="Перевести SB-101 на проверку и позвать автора принимать."),
+            Proposal(message_id=m3.id, kind=ProposalKind.new_task, state=ProposalState.history,
+                     confidence=0.8, model="demo", reading="Просят выгрузку отчёта по гостям.",
+                     action="Завести запрос на выгрузку в Excel.",
+                     draft={"title": "Выгрузка отчёта по гостям в Excel", "type": "request", "module": "PMS"}),
         ])
         await s.commit()
 
@@ -212,7 +218,16 @@ def as_manager(browser, base: str) -> list[str]:
 
     tab(page, "Входящие")
     check("во входящих виден запрос из чата", visible(page, "у Registon опять"))
+    check("запрос из истории не во входящих", not page.get_by_text("отчёт по гостям").is_visible())
     shot(page, "02_manager_inbox")
+    page.get_by_role("button", name="История", exact=True).click()
+    check("запрос из истории — в архиве", visible(page, "отчёт по гостям"))
+    check("в архиве нет «Не то»", page.get_by_role("button", name="Не то").count() == 0)
+    check("вкладка «История» выбрана",
+          page.get_by_role("button", name="История", exact=True).get_attribute("aria-pressed") == "true")
+    page.wait_for_timeout(300)  # переключатель меняет фон плавно
+    shot(page, "02b_manager_history")
+    page.get_by_role("button", name=re.compile("^Новые")).click()
 
     page.get_by_role("button", name="В задачи", exact=True).first.click()
     blocked = page.get_by_role("button", name="Заполните обязательные поля")
